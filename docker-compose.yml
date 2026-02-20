@@ -1,0 +1,60 @@
+# version: '3.8'
+
+services:
+  # OTA Services
+  ota_api:
+    container_name: ota_api
+    build: ./ota_api # Replace with the actual path to your FastAPI app
+    image: 192.168.155.22:5000/ota_api:1.0.1
+    # command: [ "gunicorn", "--reload", "--workers=5", "--worker-class=uvicorn.workers.UvicornWorker", "--worker-connections=1000", "--timeout=60", "-b", "0.0.0.0:7700", "app.main:app" ]
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7700", "--reload" ]
+    ports:
+      - 7002:7700
+    restart: unless-stopped
+    volumes:
+      - ./ota_api:/app
+      # - /home/qadmin/uftcl_dev/broker/app/static/uploads/limit_files:/app/protected/static/uploads/limit_files
+      # - /home/qadmin/uftcl_dev/broker/app/static/uploads/it_files:/app/protected/static/uploads/it_files
+      # networks:
+      #   - quantbd_app-network # Connect ota_api
+    environment:
+      - APP_NAME=OTA API
+      - APP_ENV=LOCAL
+      - MQTT_HOST=ota_mqtt
+      - MQTT_PORT=1883
+    depends_on:
+      - ota_redis
+      - ota_mqtt
+
+  ota_redis:
+    image: redis:alpine
+    container_name: ota_redis
+    command: redis-server --requirepass devpassword
+    ports:
+      - "6456:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - default
+
+  ota_mqtt:
+    image: eclipse-mosquitto:latest
+    container_name: ota_mqtt
+    ports:
+      - "7760:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    restart: unless-stopped
+    networks:
+      - default
+
+networks:
+  default:
+    # external: True
+    name: ota-network
+
+volumes:
+  redis_data:

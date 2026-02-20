@@ -1,0 +1,22 @@
+# version: '3.8'
+
+services:
+  # OTA Services
+  ota_api:
+    restart: always
+    image: 192.168.155.22:5000/ota_api:1.0.0
+    logging:
+      driver: syslog
+    command: [ "gunicorn", "--workers=5", "--worker-class=uvicorn.workers.UvicornWorker", "--worker-connections=1000", "--timeout=60", "-b", "0.0.0.0:7700", "app.main:app" ]
+    # command: ["uvicorn", "--workers=5", "--timeout-keep-alive=120", "app.main:app", "--host", "0.0.0.0", "--port", "7700"]
+    ports:
+      - 7001:7700
+    # deploy:
+    #   replicas: 1
+    env_file:
+      - '.env'
+    volumes:
+      - .env:/app/.env
+      # - ./log:/app/log
+      # - /home/qadmin/ota_api/protected/static/uploads/limit_files:/app/app/protected/static/uploads/limit_files
+

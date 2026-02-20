@@ -1,0 +1,40 @@
+# version: '3.8'
+
+services:
+  # BTTM Services
+  bbtm_api:
+    container_name: bbtm_api
+    build: ./bbtm_api # Replace with the actual path to your FastAPI app
+    image: 192.168.155.22:5000/bbtm_api:1.0.0
+    command: ["gunicorn", "--reload", "--workers=5", "--worker-class=uvicorn.workers.UvicornWorker", "--worker-connections=1000", "--timeout=60", "-b", "0.0.0.0:7700", "app.main:app"]
+    # command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7700", "--reload"]
+    ports:
+      - 7001:7700
+    restart: unless-stopped
+    volumes:
+      - ./bbtm_api:/app
+      # - /home/qadmin/uftcl_dev/broker/app/static/uploads/limit_files:/app/protected/static/uploads/limit_files
+      # - /home/qadmin/uftcl_dev/broker/app/static/uploads/it_files:/app/protected/static/uploads/it_files
+    # networks:
+    #   - quantbd_app-network # Connect bbtm_api
+
+  # Vue 3 Frontend
+  bbtm_web:
+    container_name: bbtm_web
+    working_dir: /app
+    build:
+      context: ./bbtm_web
+      dockerfile: Dockerfile
+    ports:
+      - 7010:5173 # default Vite dev server port
+    volumes:
+      - ./bbtm_web:/app
+      - /app/node_modules  # avoid overwriting with local
+    command: ["npm", "run", "dev"]
+    # networks:
+    #   - quantbd_app-network
+
+networks:
+  default:
+    external: True
+    name: bbtm-network
