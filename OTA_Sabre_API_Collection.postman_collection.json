@@ -1,0 +1,449 @@
+{
+    "info": {
+        "_postman_id": "b96f4c80-6e4b-4b2a-a53d-82d22b64a2c5",
+        "name": "OTA Sabre API Integration (Documented)",
+        "description": "Comprehensive Postman collection for testing the Sabre Air Ticket API integration within the OTA Engine API. \n\nEvery parameter across all 12 endpoints is detailed to explain its exact use case when communicating with the Sabre API sandboxes.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "1. Search Flights (Bargain Finder Max)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"origin\": \"JFK\",\n  \"destination\": \"LHR\",\n  \"departure_date\": \"2024-12-01\",\n  \"return_date\": \"2024-12-15\",\n  \"adults\": 2,\n  \"children\": 1,\n  \"infants\": 1,\n  \"cabin_class\": \"Y\",\n  \"direct_flights_only\": false,\n  \"max_stops\": 1,\n  \"included_airlines\": [\"BA\", \"AA\"],\n  \"excluded_airlines\": [\"DL\"],\n  \"flexible_dates\": false,\n  \"corporate_code\": \"CORP123\",\n  \"account_code\": \"ACC456\"\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/search/flights",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "search",
+                        "flights"
+                    ]
+                },
+                "description": "### Sabre Bargain Finder Max (BFM)\n**Use Case**: The entry point for any OTA. Returns the absolute cheapest itineraries for a given city pair and date.\n\n**Parameters:**\n- `origin`: 3-Letter IATA Airport Code (e.g., JFK string) where the journey begins.\n- `destination`: 3-Letter IATA Airport Code (e.g., LHR string) where the journey arrives.\n- `departure_date`: Date in YYYY-MM-DD format (e.g., '2024-12-01') for the outbound flight.\n- `return_date`: Optional string (YYYY-MM-DD). If omitted, Sabre triggers a One-Way search. If included, Sabre searches for Round-Trip.\n- `adults`: Int. Number of adult travelers (ADT code in Sabre). Used for base pricing.\n- `children`: Int. Number of children (CNN code). Requires accompanying adults.\n- `infants`: Int. Number of infants on lap (INF code). Cannot exceed number of adults.\n- `cabin_class`: String. 'Y' (Economy), 'S' (Premium Economy), 'C' (Business), 'J' (Premium Business), 'F' (First), 'P' (Premium First).\n\n**Advanced Parameters:**\n- `direct_flights_only`: Boolean. Set to true to drop all connecting itineraries.\n- `max_stops`: Int. Limits the maximum number of connections (e.g., 0 for non-stop, 1 for one layover).\n- `included_airlines`: Array of IATA Strings. Restricts results strictly to these preferred airlines.\n- `excluded_airlines`: Array of IATA Strings. Excludes specific airlines from the search.\n- `flexible_dates`: Boolean. If true, triggers Sabre ADRC to search +/- 3 days for cheaper fares.\n- `corporate_code` / `account_code`: Strings. Applied to pull private, negotiated agency fares instead of public fares."
+            },
+            "response": []
+        },
+        {
+            "name": "2. Price Flight (Enhanced Air Ticket)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"flight_segments\": [\n    {\n      \"DepartureDateTime\": \"2024-12-01T10:00:00\",\n      \"FlightNumber\": \"105\",\n      \"ResBookDesigCode\": \"Y\",\n      \"OriginLocation\": { \"LocationCode\": \"JFK\" },\n      \"DestinationLocation\": { \"LocationCode\": \"LHR\" },\n      \"MarketingAirline\": { \"Code\": \"BA\" }\n    }\n  ],\n  \"passengers\": [\n    { \"passenger_type\": \"ADT\", \"quantity\": 2 },\n    { \"passenger_type\": \"CNN\", \"quantity\": 1 }\n  ]\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/price/flight",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "price",
+                        "flight"
+                    ]
+                },
+                "description": "### Sabre Enhanced Air Ticket / Revalidate\n**Use Case**: Once a customer selects a specific flight from the BFM search results, this endpoint is used to double-check that the seats are still available and the price hasn't jumped before taking payment.\n\n**Parameters:**\n- `flight_segments`: Array of Objects. Contains the flight legs exactly as returned by BFM search.\n  - `DepartureDateTime`: Raw departure time.\n  - `FlightNumber`: Airline's flight number string.\n  - `ResBookDesigCode`: Booking Class or Fare Class (Crucial for getting exact price).\n  - `OriginLocation.LocationCode` / `DestinationLocation.LocationCode`: IATA Codes.\n  - `MarketingAirline.Code`: IATA Airline Code (e.g. BA for British Airways).\n- `passengers`: Array indicating how many of each passenger type (ADT, CNN, INF) are holding these seats to calculate final tax."
+            },
+            "response": []
+        },
+        {
+            "name": "3. Book Flight (Create PNR)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"flight_segments\": [\n    {\n      \"DepartureDateTime\": \"2024-12-01T10:00:00\",\n      \"FlightNumber\": \"105\",\n      \"ResBookDesigCode\": \"Y\",\n      \"OriginLocation\": { \"LocationCode\": \"JFK\" },\n      \"DestinationLocation\": { \"LocationCode\": \"LHR\" },\n      \"MarketingAirline\": { \"Code\": \"BA\" }\n    }\n  ],\n  \"passengers\": [\n    {\n      \"first_name\": \"JOHN\",\n      \"last_name\": \"DOE\",\n      \"passenger_type\": \"ADT\",\n      \"gender\": \"M\",\n      \"date_of_birth\": \"1980-01-01\",\n      \"email\": \"john.doe@example.com\",\n      \"phone\": \"1234567890\",\n      \"document_number\": \"P1234567\",\n      \"document_expiry\": \"2030-01-01\",\n      \"document_issue_country\": \"US\",\n      \"nationality\": \"US\"\n    }\n  ],\n  \"price_info\": {\n    \"total_fare\": \"1500.00\",\n    \"currency\": \"USD\"\n  }\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/book/pnr",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "book",
+                        "pnr"
+                    ]
+                },
+                "description": "### Sabre Create Passenger Name Record (PNR)\n**Use Case**: Once payment is captured, this endpoint locks the seats by generating a Master PNR Locator (e.g. \"XGHR3B\"). The user is now officially booked, though they don't have a ticket yet (just a reservation).\n\n**Parameters:**\n- `flight_segments`: Array of Objects. The chosen flights to lock.\n- `passengers`: Array of Objects. Extremely strict payload defining the travelers.\n  - `first_name` / `last_name`: Must perfectly match their passport. Sabre rejects special chars.\n  - `passenger_type`: ADT, CNN, INF.\n  - `gender`: M or F.\n  - `date_of_birth`: YYYY-MM-DD format.\n  - `document_number`: Passport Number or Government ID (Used for APIS info).\n  - `document_issue_country` / `nationality`: 2-Digit Country Codes.\n- `price_info`: Captured total fare to instruct Sabre to lock at a guaranteed rate."
+            },
+            "response": []
+        },
+        {
+            "name": "4. Issue Air Ticket",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"pnr\": \"ABCD12\"\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/ticket/issue",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "ticket",
+                        "issue"
+                    ]
+                },
+                "description": "### Sabre Air Ticket\n**Use Case**: Fulfills the final ticketing step. Transforms an unpaid reservation (PNR) into a paid and issued electronic ticket number (e-Ticket e.g., 125-9876543210).\n\n**Parameters:**\n- `pnr`: The 6-character alphanumeric Record Locator returned by the Booking API. This is the only parameter needed as the PNR already holds the flight and passenger data on Sabre's servers."
+            },
+            "response": []
+        },
+        {
+            "name": "5. Get PNR Details",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"pnr\": \"ABCD12\"\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/pnr/details",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "pnr",
+                        "details"
+                    ]
+                },
+                "description": "### Sabre Get Booking\n**Use Case**: Used on a \"My Trips\" page or dashboard to fetch the full details of an existing trip. Excellent for polling Sabre for flight schedule changes or retrieving e-Ticket numbers.\n\n**Parameters:**\n- `pnr`: The 6-character Record Locator to retrieve."
+            },
+            "response": []
+        },
+        {
+            "name": "6. Cancel Itinerary (PNR)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"pnr\": \"ABCD12\",\n  \"cancel_segments\": true\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/pnr/cancel",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "pnr",
+                        "cancel"
+                    ]
+                },
+                "description": "### Sabre Cancel Booking\n**Use Case**: When a user clicks \"Cancel Flight\". Completely deletes pending flight segments from a reservation before ticketing, OR cancels the active segments if ticketed (initiating a refund process outside this call).\n\n**Parameters:**\n- `pnr`: The 6-character Record Locator.\n- `cancel_segments`: Boolean. Usually `true` to cancel all flight legs in the PNR simultaneously."
+            },
+            "response": []
+        },
+        {
+            "name": "7. Void Ticket",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"ticket_number\": \"1251234567890\",\n  \"pnr\": \"ABCD12\"\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/ticket/void",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "ticket",
+                        "void"
+                    ]
+                },
+                "description": "### Sabre Void Ticket\n**Use Case**: Usually permitted within 24-hours of ticketing depending on airline rules with zero penalties. It deletes the e-Ticket from the system as if it never existed.\n\n**Parameters:**\n- `ticket_number`: The specific 13-digit e-Ticket number to void.\n- `pnr`: The associated 6-character PNR."
+            },
+            "response": []
+        },
+        {
+            "name": "8. Exchange Ticket (Auto Reissue)",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"pnr\": \"ABCD12\",\n  \"original_ticket_number\": \"1251234567890\",\n  \"new_flight_segments\": [\n    {\n      \"DepartureDateTime\": \"2024-12-05T10:00:00\",\n      \"FlightNumber\": \"107\",\n      \"ResBookDesigCode\": \"Y\",\n      \"OriginLocation\": { \"LocationCode\": \"JFK\" },\n      \"DestinationLocation\": { \"LocationCode\": \"LHR\" }\n    }\n  ]\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/ticket/exchange",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "ticket",
+                        "exchange"
+                    ]
+                },
+                "description": "### Sabre Automated Exchanges\n**Use Case**: Highly advanced feature. Used when a passenger wants to change their flight date or time. It automatically calculates the fare difference and penalty fee, then reissues the ticket for the newly provided segment.\n\n**Parameters:**\n- `pnr`: The PNR locator.\n- `original_ticket_number`: The 13-digit e-ticket number currently attached to the passenger that is being exchanged.\n- `new_flight_segments`: An array of the *new* flights they wish to take. Sabre evaluates this input against the original rules to generate a refund/collections."
+            },
+            "response": []
+        },
+        {
+            "name": "9. Get Seat Map",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"pnr\": \"ABCD12\",\n  \"flight_segment\": {\n    \"DepartureDateTime\": \"2024-12-01T10:00:00\",\n    \"FlightNumber\": \"105\",\n    \"OriginLocation\": { \"LocationCode\": \"JFK\" },\n    \"DestinationLocation\": { \"LocationCode\": \"LHR\" },\n    \"MarketingAirline\": { \"Code\": \"BA\" }\n  }\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/seats/map",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "seats",
+                        "map"
+                    ]
+                },
+                "description": "### Sabre Seat Map\n**Use Case**: Displayed right before payment or during \"Manage My Trip\". Pulls the live layout of the aircraft to let users pick their seat visually (shows occupied, available, exit rows, premium, etc.).\n\n**Parameters:**\n- `pnr`: (Optional) Provide this if you already have a booking so Sabre maps seats against your fare rules.\n- `flight_segment`: Details of the specific flight leg you want the airplane map for."
+            },
+            "response": []
+        },
+        {
+            "name": "10. Get Baggage Allowance",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"pnr\": \"ABCD12\"\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/baggage/allowance",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "baggage",
+                        "allowance"
+                    ]
+                },
+                "description": "### Sabre Baggage Allowance\n**Use Case**: Used on the itinerary receipt page to explicitly outline what bags the user gets (e.g., \"0PC\", \"1PC\", \"23KG\"), minimizing airport surprises.\n\n**Parameters:**\n- `pnr`: The record locator. Based on the ticketed fare within this PNR, Sabre determines exactly what the baggage entitlement is."
+            },
+            "response": []
+        },
+        {
+            "name": "11. Place PNR on Queue",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"pnr\": \"ABCD12\",\n  \"pseudo_city_code\": \"W1V4\",\n  \"queue_number\": \"50\"\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/pnr/queue",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "pnr",
+                        "queue"
+                    ]
+                },
+                "description": "### Sabre Queue Place\n**Use Case**: Essential for OTA operations. Operations teams use queues (inboxes) to manage reservations. If a ticket fails, or needs manual ticketing intervention, the API \"places\" the PNR onto a Ticketing Queue for an agent to fix.\n\n**Parameters:**\n- `pnr`: The reservation locator.\n- `pseudo_city_code`: Your agency's assigned Pseudo City Code (e.g. W1V4).\n- `queue_number`: The numerical bucket. E.g., Queue 50 is often manual ticketing, Queue 10 might be schedule changes."
+            },
+            "response": []
+        },
+        {
+            "name": "12. Get Fare Rules",
+            "request": {
+                "method": "POST",
+                "header": [
+                    {
+                        "key": "Content-Type",
+                        "value": "application/json"
+                    }
+                ],
+                "body": {
+                    "mode": "raw",
+                    "raw": "{\n  \"flight_segment\": {\n    \"DepartureDateTime\": \"2024-12-01T10:00:00\",\n    \"FlightNumber\": \"105\",\n    \"ResBookDesigCode\": \"Y\",\n    \"OriginLocation\": { \"LocationCode\": \"JFK\" },\n    \"DestinationLocation\": { \"LocationCode\": \"LHR\" },\n    \"MarketingAirline\": { \"Code\": \"BA\" }\n  }\n}",
+                    "options": {
+                        "raw": {
+                            "language": "json"
+                        }
+                    }
+                },
+                "url": {
+                    "raw": "{{base_url}}/api/v1/sabre/rules/fare",
+                    "host": [
+                        "{{base_url}}"
+                    ],
+                    "path": [
+                        "api",
+                        "v1",
+                        "sabre",
+                        "rules",
+                        "fare"
+                    ]
+                },
+                "description": "### Sabre Structure Fare Rules\n**Use Case**: Must be displayed to a user before they book to avoid liability. This pulls the airline's raw penalty rules covering cancellations, modifications, no-show fees, and maximum stay restrictions.\n\n**Parameters:**\n- `flight_segment`: Passing the identical flight parameter (specifically utilizing the `ResBookDesigCode` class) dictates what rules apply to that ticket type. First class has different rules to basic economy."
+            },
+            "response": []
+        }
+    ],
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "http://127.0.0.1:8000",
+            "type": "string"
+        }
+    ]
+}
