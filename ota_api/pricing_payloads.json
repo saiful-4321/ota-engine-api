@@ -1,0 +1,68 @@
+{
+  "Example 1: Price a Simple One-Way Flight (1 Adult)": {
+    "flight_segments": [
+      {
+        "DepartureDateTime": "2026-06-15T11:45:00",
+        "FlightNumber": "447",
+        "bookingClass": "Y",
+        "destination": "SIN",
+        "airline": "SQ",
+        "origin": "DAC"
+      }
+    ],
+    "passengers": [
+      {
+        "passenger_type": "ADT",
+        "quantity": 1
+      }
+    ]
+  },
+  "Example 2: Price Virgin Atlantic (JFK-LHR)": {
+    "flight_segments": [
+      {
+        "departure": "2026-06-10T20:45:00",
+        "flightNumber": "154",
+        "bookingClass": "Y",
+        "origin": "JFK",
+        "destination": "LHR",
+        "airline": "VS"
+      }
+    ],
+    "passengers": [
+      {
+        "passenger_type": "ADT",
+        "quantity": 1
+      }
+    ]
+  },
+  "Example 3: Price a Round-Trip Flight (2 Adults, 1 Child)": {
+    "flight_segments": [
+      {
+        "departure": "2026-07-20T10:00:00",
+        "flightNumber": "123",
+        "bookingClass": "Y",
+        "origin": "JFK",
+        "destination": "LHR",
+        "airline": "BA"
+      },
+      {
+        "departure": "2026-08-05T15:30:00",
+        "flightNumber": "124",
+        "bookingClass": "Y",
+        "origin": "LHR",
+        "destination": "JFK",
+        "airline": "BA"
+      }
+    ],
+    "passengers": [
+      {
+        "passenger_type": "ADT",
+        "quantity": 2
+      },
+      {
+        "passenger_type": "CNN",
+        "quantity": 1
+      }
+    ]
+  }
+}

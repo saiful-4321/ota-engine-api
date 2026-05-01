@@ -1,0 +1,68 @@
+{
+  "_readme": "Payload scenarios for the POST /sabre/rules/fare endpoint (Fare Rules API).",
+  "_endpoint": "POST {{URL}}/sabre/rules/fare",
+  "_notes": [
+    "fare_basis_code: Required. Obtained from a previous BFM search response (e.g., 'Y11BDOA').",
+    "airline: Required. 2-letter IATA airline code (e.g., 'SQ').",
+    "flight_number: Required. Numeric flight number as string (e.g., '447').",
+    "booking_class: Required. Single letter cabin/class code (e.g., 'Y', 'N', 'B').",
+    "departure_date: Required. ISO format YYYY-MM-DD.",
+    "origin: Required. 3-letter IATA airport code.",
+    "destination: Required. 3-letter IATA airport code.",
+    "passenger_type: Optional. Defaults to 'ADT' (Adult). Use 'CNN' for child, 'INF' for infant."
+  ],
+  "scenarios": [
+    {
+      "_label": "1. Economy Flexi Fare Rules - DAC to SIN (Singapore Airlines)",
+      "flight_segment": {
+        "origin": "DAC",
+        "destination": "SIN",
+        "airline": "SQ",
+        "flight_number": "447",
+        "departure_date": "2026-06-15",
+        "fare_basis_code": "Y11BDOA",
+        "booking_class": "Y",
+        "passenger_type": "ADT"
+      }
+    },
+    {
+      "_label": "2. Economy Value Fare Rules - DAC to SIN (Singapore Airlines)",
+      "flight_segment": {
+        "origin": "DAC",
+        "destination": "SIN",
+        "airline": "SQ",
+        "flight_number": "447",
+        "departure_date": "2026-06-15",
+        "fare_basis_code": "N15BDOA",
+        "booking_class": "N",
+        "passenger_type": "ADT"
+      }
+    },
+    {
+      "_label": "3. Business Class Fare Rules - DAC to SIN",
+      "flight_segment": {
+        "origin": "DAC",
+        "destination": "SIN",
+        "airline": "SQ",
+        "flight_number": "447",
+        "departure_date": "2026-06-15",
+        "fare_basis_code": "C11BDOA",
+        "booking_class": "C",
+        "passenger_type": "ADT"
+      }
+    },
+    {
+      "_label": "4. Child Passenger Fare Rules - DAC to SIN",
+      "flight_segment": {
+        "origin": "DAC",
+        "destination": "SIN",
+        "airline": "SQ",
+        "flight_number": "447",
+        "departure_date": "2026-06-15",
+        "fare_basis_code": "Y11BDOA",
+        "booking_class": "Y",
+        "passenger_type": "CNN"
+      }
+    }
+  ]
+}

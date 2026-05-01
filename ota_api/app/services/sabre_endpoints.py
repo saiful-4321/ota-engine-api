@@ -4,7 +4,7 @@ class SabreEndpoints:
 
     # Search and Pricing
     BARGAIN_FINDER_MAX = "/v5/offers/shop"
-    ENHANCED_AIR_TICKET_PRICE = "/v4/offers/price"
+    FLIGHT_CHECK = "/v1/offers/flightCheck"
     SEAT_MAP = "/v3/offers/seatmap"
     BAGGAGE_ALLOWANCE = "/v4/offers/baggage"
     STRUCTURE_FARE_RULES = "/v1/offers/farerules"

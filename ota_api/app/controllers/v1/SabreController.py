@@ -12,7 +12,11 @@ from app.services.sabre_service import SabreFlightService
 # Define a router specifically for Sabre endpoints
 router = APIRouter()
 
-from app.helpers.sabre_helper import format_bfm_response
+from app.helpers.sabre_helper import (
+    format_bfm_response, format_pnr_response, format_pnr_details_response, 
+    format_ticketing_response, format_pricing_response, format_cancel_response,
+    format_fare_rules_response
+)
 
 # Dependency to provide the Sabre service
 def get_sabre_service():
@@ -30,9 +34,10 @@ async def search_flights(request: FlightSearchRequest, service: SabreFlightServi
 @router.post("/price/flight", summary="Price a particular Itinerary", description="Verifies pricing for a given flight search outcome.")
 async def price_flight(request: FlightPricingRequest, service: SabreFlightService = Depends(get_sabre_service)):
      try:
-          # Sabre Enhanced Air Ticket logic via service
+          # Sabre Flight Check (Revalidation) via service
           response = service.price_flight(request)
-          return response
+          formatted_response = format_pricing_response(response)
+          return formatted_response
      except Exception as e:
           raise HTTPException(status_code=500, detail=str(e))
 
@@ -41,7 +46,8 @@ async def book_flight(request: FlightBookingRequest, service: SabreFlightService
      try:
           # PNR creation via service
           response = service.create_pnr(request)
-          return response
+          formatted_response = format_pnr_response(response)
+          return formatted_response
      except Exception as e:
           raise HTTPException(status_code=500, detail=str(e))
 
@@ -51,7 +57,8 @@ async def ticket_issue(request: TicketingRequest, service: SabreFlightService = 
      try:
           # Air ticket endpoint via service
           response = service.issue_ticket(request)
-          return response
+          formatted_response = format_ticketing_response(response)
+          return formatted_response
      except Exception as e:
           raise HTTPException(status_code=500, detail=str(e))
 
@@ -60,16 +67,17 @@ async def pnr_details(request: PNRDetailsRequest, service: SabreFlightService = 
      try:
           # Get PNR details via service
           response = service.get_pnr_details(request)
-          return response
+          formatted_response = format_pnr_details_response(response)
+          return formatted_response
      except Exception as e:
           raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/pnr/cancel", summary="Cancel Itinerary", description="Cancels an existing itinerary/PNR.")
 async def pnr_cancel(request: CancelItineraryRequest, service: SabreFlightService = Depends(get_sabre_service)):
      try:
-          # Cancel Itinerary via service
           response = service.cancel_itinerary(request)
-          return response
+          formatted_response = format_cancel_response(response)
+          return formatted_response
      except Exception as e:
           raise HTTPException(status_code=500, detail=str(e))
 
@@ -119,6 +127,7 @@ async def queue_place(request: QueueRequest, service: SabreFlightService = Depen
 async def fare_rules(request: FareRulesRequest, service: SabreFlightService = Depends(get_sabre_service)):
      try:
           response = service.get_fare_rules(request)
-          return response
+          formatted_response = format_fare_rules_response(response)
+          return formatted_response
      except Exception as e:
           raise HTTPException(status_code=500, detail=str(e))

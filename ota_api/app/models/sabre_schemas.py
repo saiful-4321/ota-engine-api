@@ -45,9 +45,13 @@ class FlightBookingRequest(BaseModel):
     flight_segments: List[Dict[str, Any]] = Field(..., description="Flight segments to book")
     passengers: List[BookingPassenger] = Field(..., description="Passenger details for the booking")
     price_info: Dict[str, Any] = Field(..., description="Pricing information verified previously")
+    validating_carrier: Optional[str] = Field(None, description="Optional airline code to use as validating carrier for pricing")
 
 class TicketingRequest(BaseModel):
     pnr: str = Field(..., description="Passenger Name Record (PNR) locator to ticket")
+    country_code: Optional[str] = Field("BD", description="Two-letter country code for ticketing (default is BD for Bangladesh)")
+    printer_id: Optional[str] = Field(None, description="Optional specific printer LNIATA or ID")
+    validating_carrier: Optional[str] = Field(None, description="Optional two-letter airline code to use as validating carrier")
 
 class PNRDetailsRequest(BaseModel):
     pnr: str = Field(..., description="Passenger Name Record (PNR) locator to retrieve details for")

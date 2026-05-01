@@ -18,6 +18,17 @@ try:
 except Exception as e:
     print(f"ERROR: Failed to load airlines.json: {e}")
 
+def wrap_response(clean_data: Any, raw_data: Any, status: str = "success", message: str = "") -> Dict[str, Any]:
+    """
+    Wraps the response in a standard envelope that includes both 
+    clean data and raw provider data.
+    """
+    return {
+        "status": status,
+        "message": message,
+        "data": clean_data
+    }
+
 def _minutes_to_duration(minutes: int) -> str:
     """Convert elapsed minutes to 'Xh Ym' string."""
     if not minutes:
@@ -364,10 +375,415 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                 "total_results": len(formatted_flights)
             },
             "filters": filters,
-            "flights": formatted_flights
+            "flights": formatted_flights,
         }
 
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Error parsing BFM response: {e}")
         return sabre_response
+
+def format_pnr_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the Sabre CreatePassengerNameRecordRS response into a 
+    clean, exhaustive structure for the frontend, avoiding duplication.
+    """
+    if "CreatePassengerNameRecordRS" not in sabre_response:
+        return {
+            "status": "error",
+            "message": "Invalid response from Sabre",
+            "details": sabre_response
+        }
+
+    rs = sabre_response["CreatePassengerNameRecordRS"]
+    results = rs.get("ApplicationResults", {})
+    status = results.get("status")
+    
+    # Extract PNR (Record Locator)
+    pnr = rs.get("ItineraryRef", {}).get("ID", "N/A")
+    
+    if status == "Complete":
+        # Extract segments for summary
+        segments = []
+        air_book = rs.get("AirBook", {})
+        option = air_book.get("OriginDestinationOption", {})
+        seg_list = option.get("FlightSegment", [])
+        
+        for seg in seg_list:
+            segments.append({
+                "flightNumber": seg.get("FlightNumber"),
+                "numberInParty": seg.get("NumberInParty"),
+                "airline": {
+                    "marketing": seg.get("MarketingAirline", {}).get("Code"),
+                    "marketingFlightNumber": seg.get("MarketingAirline", {}).get("FlightNumber")
+                },
+                "origin": {
+                    "code": seg.get("OriginLocation", {}).get("LocationCode")
+                },
+                "destination": {
+                    "code": seg.get("DestinationLocation", {}).get("LocationCode")
+                },
+                "departure": seg.get("DepartureDateTime"),
+                "arrival": seg.get("ArrivalDateTime"),
+                "status": seg.get("Status"),
+                "bookingClass": seg.get("ResBookDesigCode"),
+                "eTicket": seg.get("eTicket")
+            })
+
+        return {
+            "status": "success",
+            "pnr": pnr,
+            "booking": {
+                "pnr": pnr,
+                "status": "Confirmed",
+                "creation_time": results.get("Success", [{}])[0].get("timeStamp"),
+                "itinerary": segments,
+                "applicationResults": results,
+                "links": sabre_response.get("Links", [])
+            },
+        }
+    else:
+        # Handle errors
+        errors = results.get("Error", [])
+        error_msg = "Booking failed"
+        if errors:
+            msg_list = errors[0].get("SystemSpecificResults", [{}])[0].get("Message", [])
+            if msg_list:
+                error_msg = msg_list[0].get("value") or str(msg_list[0])
+
+        return {
+            "status": "error",
+            "pnr": None,
+            "message": error_msg,
+            "errors": errors,
+            "links": sabre_response.get("Links", [])
+        }
+
+def format_pnr_details_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the Sabre getBooking response into a clean, exhaustive 
+    detailed structure for the frontend, avoiding duplication.
+    """
+    data = sabre_response.get("trip", sabre_response)
+    
+    pnr = data.get("bookingId") or data.get("confirmationId")
+    if not pnr:
+        errors = data.get("errors", [])
+        return {
+            "status": "error",
+            "message": errors[0].get("description", "PNR not found or invalid response") if errors else "Invalid response",
+            "errors": errors
+        }
+
+    # 1. Flights / Itinerary
+    itinerary = []
+    for flight in data.get("flights", []):
+        itinerary.append({
+            "id": flight.get("itemId"),
+            "confirmationId": flight.get("confirmationId"),
+            "flightNumber": str(flight.get("flightNumber")),
+            "airline": {
+                "code": flight.get("airlineCode"),
+                "name": flight.get("airlineName"),
+                "logo": f"https://images.daisycon.io/airline/{flight.get('airlineCode')}.png"
+            },
+            "operatingAirline": {
+                "code": flight.get("operatingAirlineCode"),
+                "name": flight.get("operatingAirlineName"),
+                "flightNumber": str(flight.get("operatingFlightNumber"))
+            },
+            "departure": {
+                "code": flight.get("fromAirportCode"),
+                "date": flight.get("departureDate"),
+                "time": flight.get("departureTime"),
+                "terminal": flight.get("departureTerminalName"),
+                "gate": flight.get("departureGate")
+            },
+            "arrival": {
+                "code": flight.get("toAirportCode"),
+                "date": flight.get("arrivalDate"),
+                "time": flight.get("arrivalTime"),
+                "terminal": flight.get("arrivalTerminalName")
+            },
+            "status": {
+                "code": flight.get("flightStatusCode"),
+                "name": flight.get("flightStatusName")
+            },
+            "details": {
+                "cabin": flight.get("cabinTypeName"),
+                "bookingClass": flight.get("bookingClass"),
+                "aircraft": flight.get("aircraftTypeName"),
+                "durationMinutes": flight.get("durationInMinutes"),
+                "distanceMiles": flight.get("distanceInMiles"),
+                "seats": flight.get("numberOfSeats")
+            },
+            "meals": flight.get("meals", [])
+        })
+
+    # 2. Passengers / Travelers
+    passengers = []
+    for traveler in data.get("travelers", []):
+        passengers.append({
+            "id": traveler.get("nameAssociationId"),
+            "firstName": traveler.get("givenName"),
+            "lastName": traveler.get("surname"),
+            "type": traveler.get("passengerCode") or traveler.get("type"),
+            "index": traveler.get("travelerIndex")
+        })
+
+    # 3. Special Services (SSRs)
+    special_services = []
+    for ss in data.get("specialServices", []):
+        special_services.append({
+            "code": ss.get("code"),
+            "message": ss.get("message")
+        })
+
+    # 4. Journeys Summary
+    journeys = data.get("journeys", [])
+
+    # 5. Creation & Metadata
+    creation = data.get("creationDetails", {})
+
+    return {
+        "status": "success",
+        "pnr": pnr,
+        "booking": {
+            "pnr": pnr,
+            "ticketingStatus": "Ticketed" if data.get("isTicketed") else "Pending",
+            "isCancelable": data.get("isCancelable", True),
+            "creation": {
+                "user": creation.get("creationUserSine"),
+                "date": creation.get("creationDate"),
+                "time": creation.get("creationTime"),
+                "pcc": creation.get("userWorkPcc")
+            },
+            "contact": data.get("contactInfo", {}),
+            "itinerary": itinerary,
+            "passengers": passengers,
+            "journeys": journeys,
+            "specialServices": special_services,
+            "warnings": data.get("errors", []), # Sabre often puts warnings in 'errors' list
+            "signature": data.get("bookingSignature"),
+            "timestamp": data.get("timestamp")
+        },
+    }
+def format_ticketing_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the Sabre AirTicketRS response into a clean, user-friendly structure.
+    """
+    air_ticket_rs = sabre_response.get("AirTicketRS", {})
+    app_results = air_ticket_rs.get("ApplicationResults", {})
+    rs_status = app_results.get("status")
+    
+    # Success if status is 'Complete'
+    is_success = rs_status == "Complete" or sabre_response.get("status") == "Success"
+    
+    message = "Tickets issued successfully"
+    error_details = []
+
+    if not is_success:
+        message = "Ticketing failed"
+        
+        # 1. Try to find a specific cause in Warnings (Sabre often puts the real reason there)
+        warnings = app_results.get("Warning", [])
+        for warn in warnings:
+            for sys_res in warn.get("SystemSpecificResults", []):
+                for msg in sys_res.get("Message", []):
+                    content = msg.get("content") or msg.get("value")
+                    if content:
+                        error_details.append(content)
+
+        # 2. Extract main Errors
+        errors = app_results.get("Error", [])
+        for err in errors:
+            for sys_res in err.get("SystemSpecificResults", []):
+                for msg in sys_res.get("Message", []):
+                    content = msg.get("content") or msg.get("value")
+                    if content and content not in error_details:
+                        error_details.append(content)
+
+        # 3. Formulate a better message
+        if error_details:
+            # If the first error is generic, use the more specific one
+            if "No new tickets have been issued" in error_details[0] and len(error_details) > 1:
+                message = error_details[1]
+            else:
+                message = error_details[0]
+
+    return {
+        "status": "success" if is_success else "error",
+        "message": message,
+        "ticketing": {
+            "status": rs_status or sabre_response.get("status"),
+            "pnr": air_ticket_rs.get("Itinerary", {}).get("ID"),
+            "errors": error_details,
+            "timestamp": app_results.get("Error", [{}])[0].get("timeStamp") if error_details else None
+        },
+    }
+
+def format_pricing_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the Sabre flightCheck response into a premium, standardized structure.
+    Resolves flight references and extracts detailed fare information.
+    """
+    if "errors" in sabre_response:
+        return {
+            "status": "error",
+            "message": sabre_response["errors"][0].get("description", "Pricing revalidation failed"),
+            "details": sabre_response["errors"],
+        }
+
+    # 1. Map flights by ID for easy lookup
+    flights_map = {f["id"]: f for f in sabre_response.get("flights", [])}
+    
+    # 2. Extract Offer details (Take the first/main offer)
+    offers = sabre_response.get("offers", [])
+    formatted_offers = []
+    
+    for offer in offers:
+        total_price = offer.get("totalPrice", {})
+        
+        # Get fare breakdown from the first item/fare
+        fare_details = {}
+        items = offer.get("items", [])
+        if items:
+            fares = items[0].get("fares", [])
+            if fares:
+                fare_total = fares[0].get("fareTotal", {})
+                fare_details = {
+                    "baseFare": fare_total.get("equivalentFare"),
+                    "taxAmount": fare_total.get("taxAmount"),
+                    "totalAmount": fare_total.get("amount"),
+                    "currency": fare_total.get("currencyCode")
+                }
+        
+        # Resolve itinerary for this offer
+        offer_itinerary = []
+        journey_refs = offer.get("journeyRefs", [])
+        for j_ref in journey_refs:
+            # Find the journey in sabre_response
+            journey = next((j for j in sabre_response.get("journeys", []) if j["id"] == j_ref), None)
+            if journey:
+                for f_ref in journey.get("flightRefs", []):
+                    flight = flights_map.get(f_ref)
+                    if flight:
+                        offer_itinerary.append({
+                            "flightNumber": flight.get("marketingFlightNumber"),
+                            "airline": {
+                                "marketing": flight.get("marketingAirlineCode"),
+                                "operating": flight.get("operatingAirlineCode")
+                            },
+                            "origin": flight.get("departureAirportCode"),
+                            "destination": flight.get("arrivalAirportCode"),
+                            "departure": f"{flight.get('departureDate')} {flight.get('departureTime')}",
+                            "arrival": f"{flight.get('arrivalDate')} {flight.get('arrivalTime')}",
+                            "durationMinutes": flight.get("durationInMinutes"),
+                            "aircraft": flight.get("aircraftTypeCode")
+                        })
+        
+        formatted_offers.append({
+            "offerId": offer.get("id"),
+            "price": fare_details,
+            "itinerary": offer_itinerary,
+            "validUntil": offer.get("validUntil")
+        })
+
+    # For the main response, we use the first offer as the 'recommended' one
+    main_offer = formatted_offers[0] if formatted_offers else {}
+
+    return {
+        "status": "success",
+        "message": "Flight price revalidated successfully",
+        "pricing": {
+            "total": main_offer.get("price", {}).get("totalAmount"),
+            "base": main_offer.get("price", {}).get("baseFare"),
+            "taxes": main_offer.get("price", {}).get("taxAmount"),
+            "currency": main_offer.get("price", {}).get("currency"),
+            "itinerary": main_offer.get("itinerary", []),
+            "allOffers": formatted_offers # Include alternatives if any
+        },
+    }
+
+def format_cancel_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the Sabre cancelBooking response into a clean, standardized structure.
+    """
+    # Sabre cancelBooking returns an errors array on failure
+    errors = sabre_response.get("errors", [])
+    if errors:
+        first_error = errors[0]
+        return {
+            "status": "error",
+            "message": first_error.get("description") or first_error.get("message", "Cancellation failed"),
+            "errors": errors,
+        }
+
+    # On success, Sabre echoes the request back — the PNR is inside request.confirmationId
+    request_echo = sabre_response.get("request", {})
+    confirmation_id = (
+        sabre_response.get("confirmationId")             # top-level (some versions)
+        or request_echo.get("confirmationId")            # echoed request (v1 cancelBooking)
+    )
+
+    cancelled_flights = []
+    for flight in sabre_response.get("flights", []):
+        cancelled_flights.append({
+            "flightNumber": flight.get("flightNumber"),
+            "airline": flight.get("airlineCode"),
+            "origin": flight.get("fromAirportCode"),
+            "destination": flight.get("toAirportCode"),
+            "departure": f"{flight.get('departureDate', '')} {flight.get('departureTime', '')}".strip(),
+            "status": flight.get("status")
+        })
+
+    return {
+        "status": "success",
+        "message": f"Itinerary {confirmation_id} has been successfully cancelled.",
+        "cancellation": {
+            "pnr": confirmation_id,
+            "cancelledAt": sabre_response.get("timestamp"),
+            "cancelledAll": request_echo.get("cancelAll", True),
+            "cancelledSegments": cancelled_flights,
+        },
+    }
+
+def format_fare_rules_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats Sabre's /v1/offers/farerules response into a clean, structured format.
+    """
+    # Handle errors
+    errors = sabre_response.get("errors", [])
+    if errors:
+        first_error = errors[0]
+        return {
+            "status": "error",
+            "message": first_error.get("description") or first_error.get("message", "Fare rules retrieval failed"),
+            "errors": errors
+        }
+
+    # Extract fare rules categories
+    formatted_rules = []
+    for rule in sabre_response.get("fareRules", []):
+        categories = []
+        for cat in rule.get("ruleCategories", []):
+            categories.append({
+                "categoryNumber": cat.get("categoryNumber"),
+                "categoryName": cat.get("categoryName"),
+                "text": cat.get("rules", [{}])[0].get("text") if cat.get("rules") else None
+            })
+
+        formatted_rules.append({
+            "fareBasisCode": rule.get("fareBasisCode"),
+            "airline": rule.get("validatingAirlineCode"),
+            "origin": rule.get("origin"),
+            "destination": rule.get("destination"),
+            "passengerType": rule.get("passengerTypeCode"),
+            "categories": categories
+        })
+
+    return {
+        "status": "success",
+        "message": "Fare rules retrieved successfully",
+        "fareRules": formatted_rules
+    }

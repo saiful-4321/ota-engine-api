@@ -183,22 +183,101 @@ class SabreFlightService(SabreBaseService):
 
     def price_flight(self, pricing_params: FlightPricingRequest) -> dict:
         """
-        Calls Sabre's Enhanced Air Ticket API to price a specifically selected flight.
+        Calls Sabre's Flight Check API to revalidate price and availability.
         """
-        # Sabre Revalidate/Pricing Endpoint
-        url = f"{self.base_url}{SabreEndpoints.ENHANCED_AIR_TICKET_PRICE}"
+        url = f"{self.base_url}{SabreEndpoints.FLIGHT_CHECK}"
         headers = self.get_headers()
         
-        # We need a transformation layer here to map `FlightPricingRequest` input
-        # into a Sabre standard pricing payload. (Simplifying for integration scope)
+        # Extract and format journeys/flights for Flight Check API v1 (Strict Schema)
+        flights = []
+        for segment in pricing_params.flight_segments:
+            # Departure Date and Time separation
+            departure = segment.get("DepartureDateTime") or segment.get("departure")
+            dep_date = ""
+            dep_time = ""
+            
+            if isinstance(departure, dict):
+                dep_date = departure.get("date", "")
+                dep_time = departure.get("time", "")
+            elif isinstance(departure, str) and "T" in departure:
+                parts = departure.split("T")
+                dep_date = parts[0]
+                dep_time = parts[1][:5] # HH:MM
+            
+            # Arrival Date and Time separation
+            arrival = segment.get("ArrivalDateTime") or segment.get("arrival")
+            arr_date = ""
+            arr_time = ""
+            
+            if isinstance(arrival, dict):
+                arr_date = arrival.get("date", "")
+                arr_time = arrival.get("time", "")
+            elif isinstance(arrival, str) and "T" in arrival:
+                parts = arrival.split("T")
+                arr_date = parts[0]
+                arr_time = parts[1][:5] # HH:MM
+            elif not arrival:
+                # If arrival is missing, we use departure as a fallback for the date
+                arr_date = dep_date
+                arr_time = "23:59" # Fallback time
+            
+            # Booking class
+            booking_class = segment.get("ResBookDesigCode") or segment.get("bookingClass")
+            if not booking_class:
+                details = segment.get("details", {})
+                booking_class = details.get("bookingClass") or segment.get("cabinClass") or "Y"
+            
+            # Extract codes
+            dest_loc = segment.get("DestinationLocation") or segment.get("destination")
+            dest_code = dest_loc.get("LocationCode") or dest_loc.get("code") if isinstance(dest_loc, dict) else str(dest_loc or "")
+                
+            origin_loc = segment.get("OriginLocation") or segment.get("origin")
+            origin_code = origin_loc.get("LocationCode") or origin_loc.get("code") if isinstance(origin_loc, dict) else str(origin_loc or "")
+                
+            airline_info = segment.get("MarketingAirline") or segment.get("airline")
+            airline_code = airline_info.get("Code") or airline_info.get("marketing") or airline_info.get("code") if isinstance(airline_info, dict) else str(airline_info or "")
+
+            flights.append({
+                "departureDate": dep_date,
+                "departureTime": dep_time,
+                "departureAirportCode": origin_code,
+                "arrivalDate": arr_date,
+                "arrivalTime": arr_time,
+                "arrivalAirportCode": dest_code,
+                "marketingAirlineCode": airline_code,
+                "marketingFlightNumber": int(segment.get("FlightNumber") or segment.get("flightNumber") or 0),
+                "bookingClass": booking_class
+            })
+
+        # Travelers list (Strict Schema)
+        travelers = []
+        for p in pricing_params.passengers:
+            for _ in range(p.quantity):
+                travelers.append({
+                    "passengerTypeCode": p.passenger_type
+                })
+
         payload = {
-             # "OTA_AirPriceRQ": { ... mapped values ... }
-             "message": "Pricing payload mapping requires further analysis of BFM responses"
+            "journeys": [
+                {
+                    "flights": flights
+                }
+            ],
+            "travelers": travelers
         }
         
-        # Mock block to not block controllers initially
-        print("Mock: Calling price_flight", payload)
-        return {"status": "Success", "mock_message": "Pricing successful but not fully mapped."}
+        print(f"Sending Flight Check request to Sabre: {url}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Flight pricing revalidation failed. {str(e)}{error_details}")
         
     def create_pnr(self, booking_params: FlightBookingRequest) -> dict:
         """
@@ -232,14 +311,26 @@ class SabreFlightService(SabreBaseService):
             flight_number = str(segment.get("FlightNumber") or segment.get("flight_number") or "")
             res_book_desig_code = segment.get("ResBookDesigCode") or segment.get("cabin_class") or "Y"
             
-            dest_loc = segment.get("DestinationLocation", {})
-            dest_code = dest_loc.get("LocationCode") if isinstance(dest_loc, dict) else dest_loc or segment.get("destination") or ""
+            dest_loc = segment.get("DestinationLocation")
+            if isinstance(dest_loc, dict):
+                dest_code = dest_loc.get("LocationCode")
+            else:
+                dest_code = dest_loc
+            dest_code = dest_code or segment.get("destination") or ""
             
-            origin_loc = segment.get("OriginLocation", {})
-            origin_code = origin_loc.get("LocationCode") if isinstance(origin_loc, dict) else origin_loc or segment.get("origin") or ""
+            origin_loc = segment.get("OriginLocation")
+            if isinstance(origin_loc, dict):
+                origin_code = origin_loc.get("LocationCode")
+            else:
+                origin_code = origin_loc
+            origin_code = origin_code or segment.get("origin") or ""
             
-            marketing_airline = segment.get("MarketingAirline", {})
-            airline_code = marketing_airline.get("Code") if isinstance(marketing_airline, dict) else marketing_airline or segment.get("airline") or ""
+            marketing_airline = segment.get("MarketingAirline")
+            if isinstance(marketing_airline, dict):
+                airline_code = marketing_airline.get("Code")
+            else:
+                airline_code = marketing_airline
+            airline_code = airline_code or segment.get("airline") or ""
             
             flight_segments.append({
                 "DepartureDateTime": departure,
@@ -267,6 +358,19 @@ class SabreFlightService(SabreBaseService):
                 "ContactNumber": contact_numbers
             }
 
+        # Map passenger types for pricing
+        pax_types_count = {}
+        for p in booking_params.passengers:
+            ptc = p.passenger_type or "ADT"
+            pax_types_count[ptc] = pax_types_count.get(ptc, 0) + 1
+        
+        pricing_pax_types = []
+        for ptc, count in pax_types_count.items():
+            pricing_pax_types.append({
+                "Code": ptc,
+                "Quantity": str(count)
+            })
+
         payload = {
             "CreatePassengerNameRecordRQ": {
                 "version": "2.4.0",
@@ -283,6 +387,18 @@ class SabreFlightService(SabreBaseService):
                         "FlightSegment": flight_segments
                     }
                 },
+                "AirPrice": [
+                    {
+                        "PriceRequestInformation": {
+                            "Retain": True,
+                            "OptionalQualifiers": {
+                                "PricingQualifiers": {
+                                    "PassengerType": pricing_pax_types
+                                }
+                            }
+                        }
+                    }
+                ],
                 "PostProcessing": {
                     "EndTransaction": {
                         "Source": {
@@ -307,18 +423,18 @@ class SabreFlightService(SabreBaseService):
             raise Exception(f"PNR creation failed. {str(e)}{error_details}")
         
     def issue_ticket(self, ticketing_params: TicketingRequest) -> dict:
-        """
-        Calls Sabre's Air Ticket API linking to an existing PNR.
-        """
         url = f"{self.base_url}{SabreEndpoints.ISSUE_TICKET}"
         headers = self.get_headers()
-        
+
+        country = ticketing_params.country_code or "BD"
+
         payload = {
             "AirTicketRQ": {
+                "version": "1.3.0",
                 "DesignatePrinter": {
                     "Printers": {
                         "Ticket": {
-                            "CountryCode": "US" # dynamic
+                            "CountryCode": country
                         }
                     }
                 },
@@ -326,54 +442,101 @@ class SabreFlightService(SabreBaseService):
                     "ID": ticketing_params.pnr
                 },
                 "Ticketing": [
-                     {
-                         "PricingQualifiers":{
-                              "PriceQuote":[
-                                   {
-                                        "Record":[
-                                             {
-                                                  "Number": 1
-                                             }
-                                        ]
-                                   }
-                              ]
-                         }
-                     }
-                ]
+                    {
+                        "PricingQualifiers": {
+                            "PriceQuote": [
+                                {
+                                    "Record": [
+                                        {
+                                            "Number": 1
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "PostProcessing": {
+                    "EndTransaction": {
+                        "Source": {
+                            "ReceivedFrom": "API"
+                        }
+                    }
+                }
             }
         }
-        
-        print("Mock: Calling issue_ticket", payload)
-        return {"status": "Success", "message": f"Tickets issued successfully for {ticketing_params.pnr}"}
+
+        # Optional: validating carrier override
+        if ticketing_params.validating_carrier:
+            payload["AirTicketRQ"]["Ticketing"][0]["ValidatingCarrier"] = {
+                "Code": ticketing_params.validating_carrier
+            }
+
+        # Optional: specific printer LNIATA override
+        if ticketing_params.printer_id:
+            payload["AirTicketRQ"]["DesignatePrinter"]["Printers"]["Ticket"]["ID"] = ticketing_params.printer_id
+
+        print(f"Sending Ticketing request to Sabre: {url}")
+
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Ticketing failed. {str(e)}{error_details}")
 
     def get_pnr_details(self, details_params: PNRDetailsRequest) -> dict:
         """
         Calls Sabre's Get Passenger Name Record API to retrieve full details of a booking.
         """
-        url = f"{self.base_url}{SabreEndpoints.GET_PNR_DETAILS}" # Note: there are v1/trip/orders and passenger/records/locator
+        url = f"{self.base_url}{SabreEndpoints.GET_PNR_DETAILS}"
         headers = self.get_headers()
         
         payload = {
             "confirmationId": details_params.pnr
         }
         
-        print(f"Mock: Calling get_pnr_details for {details_params.pnr}", payload)
-        return {"status": "Success", "pnr": details_params.pnr, "details": "Mocked details string"}
+        print(f"Calling get_pnr_details for {details_params.pnr} at {url}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"PNR retrieval failed. {str(e)}{error_details}")
 
     def cancel_itinerary(self, cancel_params: CancelItineraryRequest) -> dict:
         """
-        Calls Sabre's Cancel Itinerary API.
+        Calls Sabre's Cancel Booking API to cancel an existing PNR/itinerary.
         """
         url = f"{self.base_url}{SabreEndpoints.CANCEL_ITINERARY}"
         headers = self.get_headers()
-        
+
         payload = {
             "confirmationId": cancel_params.pnr,
-            "cancelAll": cancel_params.cancel_segments
+            "cancelAll": cancel_params.cancel_segments if cancel_params.cancel_segments is not None else True
         }
-        
-        print(f"Mock: Calling cancel_itinerary for {cancel_params.pnr}", payload)
-        return {"status": "Success", "message": f"Itinerary {cancel_params.pnr} cancelled successfully."}
+
+        print(f"Sending Cancel Itinerary request to Sabre: {url} | PNR: {cancel_params.pnr}")
+
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Itinerary cancellation failed. {str(e)}{error_details}")
 
     def void_ticket(self, void_params: VoidTicketRequest) -> dict:
         """
@@ -467,16 +630,52 @@ class SabreFlightService(SabreBaseService):
 
     def get_fare_rules(self, rules_params: FareRulesRequest) -> dict:
         """
-        Calls Sabre's Structure Fare Rules API.
+        Calls Sabre's Fare Rules API (/v1/offers/farerules).
+        Retrieves structured fare rules for a given flight segment and fare basis.
         """
         url = f"{self.base_url}{SabreEndpoints.STRUCTURE_FARE_RULES}"
         headers = self.get_headers()
-        
+
+        segment = rules_params.flight_segment
+
+        # Build flight segment for fare rules lookup
         payload = {
-             "StructureFareRulesRQ": {
-                  # ... dynamic mappings
-             }
+            "originDestination": [
+                {
+                    "departure": {
+                        "airportCode": segment.get("origin"),
+                        "date": segment.get("departure_date")
+                    },
+                    "arrival": {
+                        "airportCode": segment.get("destination")
+                    }
+                }
+            ],
+            "travelers": [
+                {
+                    "passengerTypeCode": segment.get("passenger_type", "ADT")
+                }
+            ],
+            "fareRulesRequest": {
+                "fareBasisCode": segment.get("fare_basis_code"),
+                "marketingAirlineCode": segment.get("airline"),
+                "flightNumber": segment.get("flight_number"),
+                "bookingClass": segment.get("booking_class", "Y"),
+                "departureDate": segment.get("departure_date"),
+                "origin": segment.get("origin"),
+                "destination": segment.get("destination")
+            }
         }
-        
-        print("Mock: Calling get_fare_rules", payload)
-        return {"status": "Success", "rules": ["Mock Rule 1", "Mock Rule 2"]}
+
+        print(f"Sending Fare Rules request to Sabre: {url}")
+
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Fare rules retrieval failed. {str(e)}{error_details}")
