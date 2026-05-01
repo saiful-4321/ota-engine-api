@@ -1,4 +1,5 @@
 import json
+import re
 import requests
 from app.services.sabre_auth_service import SabreBaseService
 from app.models.sabre_schemas import (
@@ -79,14 +80,24 @@ class SabreFlightService(SabreBaseService):
              tpa_extensions["IntelliSellTransaction"]["RequestType"]["Name"] = "ADRC"
              
         # 2. Direct Flights & Max Stops
+        # Sabre BFM v5: use TravelPreferences.FlightTypePref boolean flags.
+        #   direct_flights_only => NonStopOnly: True  (strictly 0 stops)
+        #   max_stops == 1      => DirectAndNonStop: True (0 or 1 stop)
+        #   max_stops > 1       => no stop restriction applied
         if search_params.direct_flights_only or search_params.max_stops is not None:
-             flight_stops_prefs = {}
-             if search_params.direct_flights_only:
-                  flight_stops_prefs["MaxStopsQuantity"] = 0
-             elif search_params.max_stops is not None:
-                  flight_stops_prefs["MaxStopsQuantity"] = search_params.max_stops
-                  
-             payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"] = {"FlightTypePref": flight_stops_prefs}
+            flight_type_pref = {}
+            stop_qty = 0 if search_params.direct_flights_only else search_params.max_stops
+
+            if stop_qty == 0:
+                flight_type_pref["NonStopOnly"] = True
+            elif stop_qty == 1:
+                flight_type_pref["DirectAndNonStop"] = True
+            # For max_stops > 1 we don't add a restriction — Sabre returns all options
+
+            if flight_type_pref:
+                if "TravelPreferences" not in payload["OTA_AirLowFareSearchRQ"]:
+                    payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"] = {}
+                payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["FlightTypePref"] = flight_type_pref
 
         # 3. Included & Excluded Airlines
         if search_params.included_airlines or search_params.excluded_airlines:
@@ -107,16 +118,28 @@ class SabreFlightService(SabreBaseService):
              payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["VendorPref"] = vendor_prefs
 
         # 4. Corporate & Account Codes (Private Fares)
+        # Sabre BFM v5: PriceRequestInformation belongs under TravelerInfoSummary.
+        # NegotiatedFareCode must match pattern [A-Za-z]{3}[0-9]{2} (e.g. "ABC12").
+        _neg_fare_pattern = re.compile(r'^[A-Za-z]{3}[0-9]{2}$')
+
         if search_params.corporate_code or search_params.account_code:
-             # Ensure the PriceRequestInformation branch exists
-             if "PriceRequestInformation" not in payload["OTA_AirLowFareSearchRQ"]:
-                  payload["OTA_AirLowFareSearchRQ"]["PriceRequestInformation"] = {}
-                  
-             if search_params.corporate_code:
-                  payload["OTA_AirLowFareSearchRQ"]["PriceRequestInformation"]["NegotiatedFareCode"] = [{"Code": search_params.corporate_code}]
-                  
-             if search_params.account_code:
-                  payload["OTA_AirLowFareSearchRQ"]["PriceRequestInformation"]["AccountCode"] = [{"Code": search_params.account_code}]
+            price_req = payload["OTA_AirLowFareSearchRQ"]["TravelerInfoSummary"].setdefault(
+                "PriceRequestInformation", {}
+            )
+
+            if search_params.corporate_code:
+                if _neg_fare_pattern.match(search_params.corporate_code):
+                    price_req.setdefault("NegotiatedFareCode", []).append(
+                        {"Code": search_params.corporate_code}
+                    )
+                else:
+                    print(f"[WARN] corporate_code '{search_params.corporate_code}' does not match "
+                          f"Sabre pattern [A-Za-z]{{3}}[0-9]{{2}} — skipped.")
+
+            if search_params.account_code:
+                price_req.setdefault("AccountCode", []).append(
+                    {"Code": search_params.account_code}
+                )
         
          # Handle Return flight dynamically
         if search_params.return_date:

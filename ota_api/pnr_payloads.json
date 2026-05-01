@@ -1,0 +1,27 @@
+{
+  "_readme": "Payload scenarios for /pnr/details and /ticket/issue endpoints.",
+  "scenarios": [
+    {
+      "_label": "1. Retrieve PNR Details - Valid Locator",
+      "pnr": "ABCDEF"
+    },
+    {
+      "_label": "2. Retrieve PNR Details - Another Valid Locator",
+      "pnr": "XYZZY1"
+    },
+    {
+      "_label": "3. Issue Ticket for PNR",
+      "pnr": "GHIJKL"
+    },
+    {
+      "_label": "4. Cancel Itinerary",
+      "pnr": "MNO PQR",
+      "cancel_segments": true
+    },
+    {
+      "_label": "5. Void Ticket",
+      "ticket_number": "1761234567890",
+      "pnr": "STUVWX"
+    }
+  ]
+}

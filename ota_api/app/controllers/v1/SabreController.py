@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any
+import datetime
 
 from app.models.sabre_schemas import (
     FlightSearchRequest, FlightPricingRequest, FlightBookingRequest, TicketingRequest,
@@ -11,6 +12,8 @@ from app.services.sabre_service import SabreFlightService
 # Define a router specifically for Sabre endpoints
 router = APIRouter()
 
+from app.helpers.sabre_helper import format_bfm_response
+
 # Dependency to provide the Sabre service
 def get_sabre_service():
     return SabreFlightService()
@@ -19,7 +22,8 @@ def get_sabre_service():
 async def search_flights(request: FlightSearchRequest, service: SabreFlightService = Depends(get_sabre_service)) -> Dict[str, Any]:
      try:
           response = service.search_flights(request)
-          return response
+          formatted_response = format_bfm_response(response)
+          return formatted_response
      except Exception as e:
          raise HTTPException(status_code=500, detail=str(e))
 
