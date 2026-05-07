@@ -35,11 +35,11 @@ JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "your-secret-key")  # Secret k
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")  # Algorithm used for JWT
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 30))  # JWT token expiry time in minutes
 
-DB_HOST = os.environ.get("DB_HOST", "192.168.155.22")
-DB_PORT = os.environ.get("DB_PORT", "5459")
-DB_USER = os.environ.get("DB_USER", "bbtmdata")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "bbtm97531")
-DB_NAME = os.environ.get("DB_NAME", "otadb")
+DB_HOST = os.environ.get("DB_HOST", "")
+DB_PORT = os.environ.get("DB_PORT", "")
+DB_USER = os.environ.get("DB_USER", "")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_NAME = os.environ.get("DB_NAME", "")
 
 # SMTP Mail Configuration
 SMTP_SERVER = os.environ.get("SMTP_SERVER", "sandbox.smtp.mailtrap.io")  # SMTP server address
@@ -93,3 +93,4 @@ SABRE_PCC = os.environ.get("SABRE_PCC", "N3SL") # Pseudo City Code
 SABRE_USERNAME = os.environ.get("SABRE_USERNAME", "351708-N3SL-AA")
 SABRE_PASSWORD = os.environ.get("SABRE_PASSWORD", "x817k4lc")
 SABRE_TOKEN_EXPIRY_DAYS = int(os.environ.get("SABRE_TOKEN_EXPIRY_DAYS", 7))
+SABRE_LNIATA = os.environ.get("SABRE_LNIATA", "BB8FE3")  # Electronic ticket printer LNIATA (W* code)

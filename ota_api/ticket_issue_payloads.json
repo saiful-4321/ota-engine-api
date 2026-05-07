@@ -1,0 +1,69 @@
+{
+  "_readme": "Payload scenarios for the POST /sabre/ticket/issue endpoint (AirTicketRQ v1.3.0).",
+  "_endpoint": "POST {{URL}}/sabre/ticket/issue",
+  "_notes": [
+    "pnr: Required. The PNR locator returned from the Create PNR step (e.g., 'ABCDEF').",
+    "country_code: Optional. Two-letter country code for the Ticket printer (default: 'BD').",
+    "printer_id: Optional. Override the default SABRE_LNIATA env var with a specific LNIATA.",
+    "validating_carrier: Optional. Two-letter IATA code to force a validating carrier (e.g., 'SQ').",
+    "fop_type: Optional. Form of payment code. CA=Cash, CC=Credit Card, CK=Check (default: 'CA').",
+    "commission_percent: Optional. Commission percentage applied at ticketing (default: 7).",
+    "reissue: Optional. Set to true if this is a reissue ticketing, false otherwise (default: false)."
+  ],
+  "scenarios": [
+    {
+      "_label": "1. Basic Cash Ticketing (Minimal - required fields only)",
+      "pnr": "ABCDEF"
+    },
+    {
+      "_label": "2. Cash Ticketing with Explicit Commission (7%)",
+      "pnr": "ABCDEF",
+      "country_code": "BD",
+      "fop_type": "CA",
+      "commission_percent": 7,
+      "reissue": false
+    },
+    {
+      "_label": "3. Cash Ticketing with Zero Commission",
+      "pnr": "ABCDEF",
+      "country_code": "BD",
+      "fop_type": "CA",
+      "commission_percent": 0,
+      "reissue": false
+    },
+    {
+      "_label": "4. Cash Ticketing with Validating Carrier Override (e.g., Singapore Airlines)",
+      "pnr": "ABCDEF",
+      "country_code": "BD",
+      "fop_type": "CA",
+      "commission_percent": 7,
+      "validating_carrier": "SQ",
+      "reissue": false
+    },
+    {
+      "_label": "5. Credit Card Ticketing",
+      "pnr": "ABCDEF",
+      "country_code": "BD",
+      "fop_type": "CC",
+      "commission_percent": 7,
+      "reissue": false
+    },
+    {
+      "_label": "6. Reissue Ticketing (for exchanges / revalidations)",
+      "pnr": "ABCDEF",
+      "country_code": "BD",
+      "fop_type": "CA",
+      "commission_percent": 0,
+      "reissue": true
+    },
+    {
+      "_label": "7. Ticketing with Custom LNIATA Printer Override",
+      "pnr": "ABCDEF",
+      "country_code": "BD",
+      "printer_id": "BB8FE3",
+      "fop_type": "CA",
+      "commission_percent": 7,
+      "reissue": false
+    }
+  ]
+}

@@ -52,6 +52,9 @@ class TicketingRequest(BaseModel):
     country_code: Optional[str] = Field("BD", description="Two-letter country code for ticketing (default is BD for Bangladesh)")
     printer_id: Optional[str] = Field(None, description="Optional specific printer LNIATA or ID")
     validating_carrier: Optional[str] = Field(None, description="Optional two-letter airline code to use as validating carrier")
+    fop_type: Optional[str] = Field("CA", description="Form of payment type (CA=Cash, CC=Credit Card, CK=Check)")
+    commission_percent: Optional[float] = Field(7, description="Commission percentage to apply on ticketing")
+    reissue: Optional[bool] = Field(False, description="Whether this is a reissue ticketing")
 
 class PNRDetailsRequest(BaseModel):
     pnr: str = Field(..., description="Passenger Name Record (PNR) locator to retrieve details for")

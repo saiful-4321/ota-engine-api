@@ -8,7 +8,7 @@ from app.models.sabre_schemas import (
     SeatMapRequest, BaggageAllowanceRequest, QueueRequest, FareRulesRequest
 )
 from app.services.sabre_endpoints import SabreEndpoints
-from config import SABRE_PCC
+from config import SABRE_PCC, SABRE_LNIATA
 
 class SabreFlightService(SabreBaseService):
     
@@ -426,6 +426,7 @@ class SabreFlightService(SabreBaseService):
         url = f"{self.base_url}{SabreEndpoints.ISSUE_TICKET}"
         headers = self.get_headers()
 
+        lniata = ticketing_params.printer_id or SABRE_LNIATA
         country = ticketing_params.country_code or "BD"
 
         payload = {
@@ -435,6 +436,12 @@ class SabreFlightService(SabreBaseService):
                     "Printers": {
                         "Ticket": {
                             "CountryCode": country
+                        },
+                        "Hardcopy": {
+                            "LNIATA": lniata
+                        },
+                        "InvoiceItinerary": {
+                            "LNIATA": lniata
                         }
                     }
                 },
@@ -443,12 +450,23 @@ class SabreFlightService(SabreBaseService):
                 },
                 "Ticketing": [
                     {
+                        "FOP_Qualifiers": {
+                            "BasicFOP": {
+                                "Type": ticketing_params.fop_type or "CA"
+                            }
+                        },
+                        "MiscQualifiers": {
+                            "Commission": {
+                                "Percent": ticketing_params.commission_percent if ticketing_params.commission_percent is not None else 7
+                            }
+                        },
                         "PricingQualifiers": {
                             "PriceQuote": [
                                 {
                                     "Record": [
                                         {
-                                            "Number": 1
+                                            "Number": 1,
+                                            "Reissue": ticketing_params.reissue or False
                                         }
                                     ]
                                 }
@@ -459,7 +477,7 @@ class SabreFlightService(SabreBaseService):
                 "PostProcessing": {
                     "EndTransaction": {
                         "Source": {
-                            "ReceivedFrom": "API"
+                            "ReceivedFrom": f"{SABRE_PCC} WEB"
                         }
                     }
                 }
@@ -471,10 +489,6 @@ class SabreFlightService(SabreBaseService):
             payload["AirTicketRQ"]["Ticketing"][0]["ValidatingCarrier"] = {
                 "Code": ticketing_params.validating_carrier
             }
-
-        # Optional: specific printer LNIATA override
-        if ticketing_params.printer_id:
-            payload["AirTicketRQ"]["DesignatePrinter"]["Printers"]["Ticket"]["ID"] = ticketing_params.printer_id
 
         print(f"Sending Ticketing request to Sabre: {url}")
 
@@ -547,14 +561,25 @@ class SabreFlightService(SabreBaseService):
         
         payload = {
             "VoidTicketRQ": {
+                "version": "1.0.0",
                 "Ticketing": {
                     "eTicketNumber": void_params.ticket_number
                 }
             }
         }
         
-        print(f"Mock: Calling void_ticket for ticket {void_params.ticket_number}", payload)
-        return {"status": "Success", "message": f"Ticket {void_params.ticket_number} voided successfully."}
+        print(f"Sending Void Ticket request to Sabre: {url} | Ticket: {void_params.ticket_number}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Ticket voiding failed. {str(e)}{error_details}")
 
     def exchange_ticket(self, exchange_params: ExchangeTicketRequest) -> dict:
         """
@@ -564,14 +589,29 @@ class SabreFlightService(SabreBaseService):
         headers = self.get_headers()
         
         payload = {
-            "AutomatedExchangesRQ": {
-                "pnr": exchange_params.pnr,
-                "ticketNumber": exchange_params.original_ticket_number
+            "ExchangeTicketRQ": {
+                "version": "2.0.0",
+                "Ticketing": {
+                    "eTicketNumber": exchange_params.original_ticket_number
+                },
+                "Itinerary": {
+                    "ID": exchange_params.pnr
+                }
             }
         }
         
-        print(f"Mock: Calling exchange_ticket for {exchange_params.pnr}", payload)
-        return {"status": "Success", "message": f"Ticket exchanged successfully."}
+        print(f"Sending Ticket Exchange request to Sabre: {url} | PNR: {exchange_params.pnr}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Ticket exchange failed. {str(e)}{error_details}")
 
     def get_seat_maps(self, seat_params: SeatMapRequest) -> dict:
         """
@@ -580,14 +620,58 @@ class SabreFlightService(SabreBaseService):
         url = f"{self.base_url}{SabreEndpoints.SEAT_MAP}"
         headers = self.get_headers()
         
+        segment = seat_params.flight_segment
+        
+        def get_val(keys, default=None):
+            for k in keys:
+                if k in segment:
+                    return segment[k]
+            return default
+
+        # Extracting specific fields needed for SeatMapRQ
+        dest_loc = get_val(["destination", "DestinationLocation", "arrival"])
+        dest_code = dest_loc.get("LocationCode") or dest_loc.get("code") if isinstance(dest_loc, dict) else str(dest_loc or "")
+        
+        origin_loc = get_val(["origin", "OriginLocation", "departure"])
+        origin_code = origin_loc.get("LocationCode") or origin_loc.get("code") if isinstance(origin_loc, dict) else str(origin_loc or "")
+        
+        airline_info = get_val(["airline", "marketingAirline", "MarketingAirline"])
+        airline_code = airline_info.get("Code") or airline_info.get("code") if isinstance(airline_info, dict) else str(airline_info or "")
+
+        # Handle Date formatting (YYYY-MM-DD)
+        departure_date = get_val(["departure_date", "departureDate", "DepartureDateTime"])
+        if isinstance(departure_date, str) and "T" in departure_date:
+            departure_date = departure_date.split("T")[0]
+        
         payload = {
             "SeatMapRQ": {
-                "Flight": seat_params.flight_segment
+                "version": "3.0.0",
+                "Flight": {
+                    "Destination": dest_code,
+                    "Origin": origin_code,
+                    "DepartureDate": departure_date,
+                    "MarketingAirline": airline_code,
+                    "FlightNumber": str(get_val(["flight_number", "flightNumber", "FlightNumber"]) or ""),
+                    "ResBookDesigCode": get_val(["booking_class", "bookingClass", "ResBookDesigCode", "cabinClass"]) or "Y"
+                }
             }
         }
+
+        if seat_params.pnr:
+            payload["SeatMapRQ"]["BookingDetails"] = {"PNR": seat_params.pnr}
         
-        print("Mock: Calling get_seat_maps", payload)
-        return {"status": "Success", "seats": []}
+        print(f"Sending Seat Map request to Sabre: {url}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Seat map retrieval failed. {str(e)}{error_details}")
 
     def get_baggage_allowance(self, baggage_params: BaggageAllowanceRequest) -> dict:
         """
@@ -598,12 +682,25 @@ class SabreFlightService(SabreBaseService):
         
         payload = {
             "BaggageAllowanceRQ": {
-                 "pnr": baggage_params.pnr
+                 "version": "4.0.0",
+                 "BookingDetails": {
+                     "PNR": baggage_params.pnr
+                 }
             }
         }
         
-        print("Mock: Calling get_baggage_allowance", payload)
-        return {"status": "Success", "allowance": "1PC"}
+        print(f"Sending Baggage Allowance request to Sabre: {url} | PNR: {baggage_params.pnr}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Baggage allowance retrieval failed. {str(e)}{error_details}")
 
     def place_in_queue(self, queue_params: QueueRequest) -> dict:
         """
@@ -614,19 +711,31 @@ class SabreFlightService(SabreBaseService):
         
         payload = {
             "QueuePlaceRQ": {
+                "version": "1.0.0",
                 "QueueInfo": {
                     "QueueIdentifier": [
                         {
                             "Number": queue_params.queue_number,
                             "PseudoCityCode": queue_params.pseudo_city_code
                         }
-                    ]
+                    ],
+                    "RecordLocator": queue_params.pnr
                 }
             }
         }
         
-        print(f"Mock: Placing PNR {queue_params.pnr} on queue {queue_params.queue_number}", payload)
-        return {"status": "Success", "message": "PNR placed on queue"}
+        print(f"Sending Queue Place request to Sabre: {url} | PNR: {queue_params.pnr} -> Queue: {queue_params.queue_number}")
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            error_details = ""
+            if 'response' in locals() and hasattr(response, 'text'):
+                error_details = f" | Details: {response.text}"
+                print(f"Sabre Error Response: {response.text}")
+            raise Exception(f"Queue placement failed. {str(e)}{error_details}")
 
     def get_fare_rules(self, rules_params: FareRulesRequest) -> dict:
         """
