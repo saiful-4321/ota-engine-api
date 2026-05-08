@@ -68,6 +68,9 @@ for version in versions:
     if "SabreController" in controllers:
         app.include_router(controllers["SabreController"].router, prefix=f"/api/{version}/sabre", tags=[f"Sabre Provider {version.upper()}"])
 
+    if "SearchController" in controllers:
+        app.include_router(controllers["SearchController"].router, prefix=f"/api/{version}/search", tags=[f"Search {version.upper()}"])
+
 # Processing job start
 # @app.on_event("startup")
 # def startup_event():
