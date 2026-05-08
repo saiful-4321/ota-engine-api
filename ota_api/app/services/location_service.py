@@ -1,35 +1,47 @@
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_
 from app.models.otadb.Airport import Airport
 from app.models.otadb.City import City
 from app.models.otadb.Country import Country
 from app.utils.redis_utils import redis_helper
 import hashlib
+from difflib import SequenceMatcher
 
 class LocationService:
+    SUPER_HUBS = {
+        'LHR', 'JFK', 'DXB', 'SIN', 'HND', 'CDG', 'AMS', 'IST', 'FRA', 
+        'CAN', 'ATL', 'ORD', 'DFW', 'DEN', 'LAX', 'MAD', 'BKK', 'DEL', 
+        'ICN', 'PEK', 'SYD', 'BOM', 'MUC', 'ZRH', 'HKG', 'DOH'
+    }
+
     def __init__(self, db: Session):
         self.db = db
-        self.cache_ttl = 3600  # Cache results for 1 hour
+        self.cache_ttl = 3600
+
+    def _get_fuzzy_ratio(self, a, b):
+        if not a or not b:
+            return 0
+        return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
     def search_locations(self, query: str, limit: int = 15):
         if not query:
             return []
 
-        query = query.strip().lower()
+        # Sanitize and limit input length for security
+        query = query.strip().lower()[:50]
         
-        # 1. Check Redis Cache First
-        cache_key = f"loc_search:{hashlib.md5(query.encode()).hexdigest()}"
+        cache_key = f"loc_search_opt:{hashlib.md5(query.encode()).hexdigest()}"
         cached_results = redis_helper.get_data(cache_key)
         if cached_results:
             return cached_results
 
-        # 2. Database Search
         search_term = f"%{query}%"
+        fetch_limit = limit * 3
 
-        # Search Cities (Priority 1)
+        # Optimized Search: Use joinedload to prevent N+1 queries
         city_results = (
             self.db.query(City)
-            .outerjoin(Country, City.country_id == Country.id)
+            .options(joinedload(City.country))
             .filter(City.status == 'Active')
             .filter(
                 or_(
@@ -37,15 +49,13 @@ class LocationService:
                     City.iata_code.ilike(query)
                 )
             )
-            .limit(limit)
+            .limit(fetch_limit)
             .all()
         )
 
-        # Search Individual Airports (Priority 2)
         airport_results = (
             self.db.query(Airport)
-            .outerjoin(City, Airport.city_id == City.id)
-            .outerjoin(Country, Airport.country_id == Country.id)
+            .options(joinedload(Airport.city), joinedload(Airport.country))
             .filter(Airport.status == 'Active')
             .filter(
                 or_(
@@ -53,57 +63,60 @@ class LocationService:
                     Airport.name.ilike(search_term)
                 )
             )
-            .limit(limit)
+            .limit(fetch_limit)
             .all()
         )
 
         formatted_results = []
         seen_codes = set()
 
-        # Format Cities
         for city in city_results:
             code = city.iata_code or ""
             if code and code not in seen_codes:
+                city_name = city.name or "Unknown"
+                ratio = max(self._get_fuzzy_ratio(query, code), self._get_fuzzy_ratio(query, city_name))
                 formatted_results.append({
                     "code": code,
                     "name": "All Airports",
-                    "city": city.name or "Unknown",
+                    "city": city_name,
                     "country": city.country.name if city.country else "Unknown",
-                    "type": "city"
+                    "type": "city",
+                    "score": ratio,
+                    "is_hub": 1 if code in self.SUPER_HUBS else 0,
+                    "is_intl": 1
                 })
                 seen_codes.add(code)
 
-        # Format Airports
         for airport in airport_results:
             code = airport.iata_code or ""
             if code and code not in seen_codes:
+                airport_name = airport.name or "Unknown"
+                city_name = airport.city.name if airport.city else "Unknown"
+                ratio = max(self._get_fuzzy_ratio(query, code), self._get_fuzzy_ratio(query, airport_name), self._get_fuzzy_ratio(query, city_name))
                 formatted_results.append({
                     "code": code,
-                    "name": airport.name or "Unknown",
-                    "city": airport.city.name if airport.city else "Unknown",
+                    "name": airport_name,
+                    "city": city_name,
                     "country": airport.country.name if airport.country else "Unknown",
-                    "type": "airport"
+                    "type": "airport",
+                    "score": ratio,
+                    "is_hub": 1 if code in self.SUPER_HUBS else 0,
+                    "is_intl": 1 if airport.is_international else 0
                 })
                 seen_codes.add(code)
 
-        # 3. Intelligent Ranking Logic
-        def relevance_score(item):
-            code_lower = (item['code'] or "").lower()
-            city_lower = (item['city'] or "").lower()
-            name_lower = (item['name'] or "").lower()
-            
-            if code_lower == query:
-                return (0, item['type'] != 'city')
-            if city_lower.startswith(query):
-                return (1, item['type'] != 'city')
-            if name_lower.startswith(query):
-                return (2, item['type'] != 'city')
-            return (3, item['type'] != 'city')
+        def ranking_key(item):
+            is_exact_iata = 1 if item['code'].lower() == query else 0
+            return (-is_exact_iata, -item['is_hub'], -item['score'], -item['is_intl'], 0 if item['type'] == 'city' else 1)
 
-        formatted_results.sort(key=relevance_score)
-        final_results = formatted_results[:limit]
+        formatted_results.sort(key=ranking_key)
+        
+        final_results = []
+        for res in formatted_results[:limit]:
+            for k in ['score', 'is_hub', 'is_intl']:
+                res.pop(k, None)
+            final_results.append(res)
 
-        # 4. Save to Cache
         if final_results:
             redis_helper.set_data_ttl(cache_key, final_results, self.cache_ttl)
 
