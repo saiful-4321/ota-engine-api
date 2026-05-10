@@ -7,7 +7,7 @@ class SabreEndpoints:
     FLIGHT_CHECK = "/v1/offers/flightCheck"
     SEAT_MAP = "/v3/offers/seatmap"
     BAGGAGE_ALLOWANCE = "/v4/offers/baggage"
-    STRUCTURE_FARE_RULES = "/v1/offers/farerules"
+    STRUCTURE_FARE_RULES = "/v1/offers/fareRules"
 
     # Booking and Ticketing
     CREATE_PNR = "/v2.4.0/passenger/records"

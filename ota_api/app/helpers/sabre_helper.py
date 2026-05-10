@@ -787,3 +787,35 @@ def format_fare_rules_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]
         "message": "Fare rules retrieved successfully",
         "fareRules": formatted_rules
     }
+
+def format_error_response(error: Exception) -> Dict[str, Any]:
+    """
+    Standardizes exception messages into a consistent JSON error structure.
+    Parses 'Details:' if present in the exception string to extract raw Sabre JSON.
+    """
+    error_str = str(error)
+    message = error_str
+    details = None
+
+    # Try to extract JSON details if present (service methods append " | Details: {json}")
+    if " | Details: " in error_str:
+        parts = error_str.split(" | Details: ")
+        message = parts[0]
+        try:
+            details = json.loads(parts[1])
+            # If details has a more specific message, promote it
+            if isinstance(details, dict):
+                if "message" in details:
+                    message = f"{message}: {details['message']}"
+                elif "description" in details:
+                    message = f"{message}: {details['description']}"
+        except:
+            details = parts[1]
+
+    return {
+        "status": "error",
+        "message": message,
+        "details": details,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+
