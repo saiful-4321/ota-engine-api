@@ -1,0 +1,1525 @@
+{
+    "flights": [
+        {
+            "id": "100",
+            "tripType": "round-trip",
+            "airline": {
+                "code": "EK",
+                "name": "Emirates",
+                "logo": "https://images.daisycon.io/airline/EK.png"
+            },
+            "departure": {
+                "time": "01:40",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "12:50",
+                "code": "LHR",
+                "city": "London",
+                "airport": "Heathrow Airport"
+            },
+            "duration": "16h 10m",
+            "price": "$752",
+            "numericPrice": 752,
+            "stops": ["DXB"],
+            "journeyDate": "Feb 10, 2026",
+            "isRefundable": true,
+            "baggageSummary": "23KG",
+            "seatsRemaining": 8,
+            "legs": [
+                {
+                    "flightNumber": "585",
+                    "airline": {
+                        "code": "EK",
+                        "name": "Emirates",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/EK.png"
+                    },
+                    "departure": {
+                        "time": "01:40",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "1"
+                    },
+                    "arrival": {
+                        "time": "04:40",
+                        "code": "DXB",
+                        "city": "Dubai",
+                        "airport": "Dubai Intl",
+                        "terminal": "3"
+                    },
+                    "duration": "5h 00m",
+                    "stops": [],
+                    "baggage": "23kg",
+                    "amenities": { "wifi": true, "meal": true, "entertainment": true, "power": true }
+                },
+                {
+                    "flightNumber": "586",
+                    "airline": {
+                        "code": "EK",
+                        "name": "Emirates",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/EK.png"
+                    },
+                    "departure": {
+                        "time": "20:00",
+                        "code": "DXB",
+                        "city": "Dubai",
+                        "airport": "Dubai Intl",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "22:00",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "6h 00m",
+                    "stops": [],
+                    "baggage": "23kg",
+                    "amenities": { "wifi": true, "meal": true, "entertainment": true, "power": true }
+                }
+            ]
+        },
+        {
+            "id": "200",
+            "tripType": "multi-city",
+            "airline": {
+                "code": "SQ",
+                "name": "Singapore Airlines",
+                "logo": "https://images.daisycon.io/airline/SQ.png"
+            },
+            "departure": {
+                "time": "11:45",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "22:55",
+                "code": "SYD",
+                "city": "Sydney",
+                "airport": "Kingsford Smith"
+            },
+            "duration": "18h 10m",
+            "price": "$1,120",
+            "numericPrice": 1120,
+            "stops": ["SIN"],
+            "journeyDate": "Mar 05, 2026",
+            "isRefundable": false,
+            "baggageSummary": "30KG",
+            "seatsRemaining": 4,
+            "legs": [
+                {
+                    "flightNumber": "447",
+                    "airline": {
+                        "code": "SQ",
+                        "name": "Singapore Airlines",
+                        "aircraft": "Airbus A350-900",
+                        "logo": "https://images.daisycon.io/airline/SQ.png"
+                    },
+                    "departure": {
+                        "time": "11:45",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "18:10",
+                        "code": "SIN",
+                        "city": "Singapore",
+                        "airport": "Changi Airport",
+                        "terminal": "3"
+                    },
+                    "duration": "4h 25m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": { "wifi": true, "meal": true, "entertainment": true, "power": true }
+                },
+                {
+                    "flightNumber": "231",
+                    "airline": {
+                        "code": "SQ",
+                        "name": "Singapore Airlines",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/SQ.png"
+                    },
+                    "departure": {
+                        "time": "00:45",
+                        "code": "SIN",
+                        "city": "Singapore",
+                        "airport": "Changi Airport",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "11:55",
+                        "code": "SYD",
+                        "city": "Sydney",
+                        "airport": "Kingsford Smith",
+                        "terminal": "1"
+                    },
+                    "duration": "8h 10m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": { "wifi": true, "meal": true, "entertainment": true, "power": true }
+                }
+            ]
+        },
+        {
+            "id": "9",
+            "tripType": "one-way",
+            "airline": {
+                "code": "AI",
+                "name": "Air India",
+                "logo": "https://images.daisycon.io/airline/AI.png"
+            },
+            "departure": {
+                "time": "07:00",
+                "code": "DEL",
+                "city": "Delhi",
+                "airport": "Indira Gandhi Intl"
+            },
+            "arrival": {
+                "time": "09:15",
+                "code": "BOM",
+                "city": "Mumbai",
+                "airport": "Chhatrapati Shivaji Maharaj Intl"
+            },
+            "duration": "2h 15m",
+            "price": "$120",
+            "numericPrice": 120,
+            "stops": [],
+            "journeyDate": "Feb 06, 2026",
+            "isRefundable": true,
+            "baggageSummary": "25KG",
+            "seatsRemaining": 8,
+            "legs": [
+                {
+                    "flightNumber": "864",
+                    "airline": {
+                        "code": "AI",
+                        "name": "Air India",
+                        "aircraft": "Airbus A321",
+                        "logo": "https://images.daisycon.io/airline/AI.png"
+                    },
+                    "departure": {
+                        "time": "07:00",
+                        "code": "DEL",
+                        "city": "Delhi",
+                        "airport": "Indira Gandhi Intl",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "09:15",
+                        "code": "BOM",
+                        "city": "Mumbai",
+                        "airport": "Chhatrapati Shivaji Maharaj Intl",
+                        "terminal": "2"
+                    },
+                    "duration": "2h 15m",
+                    "stops": [],
+                    "baggage": "25kg",
+                    "amenities": {
+                        "wifi": false,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "7",
+            "tripType": "one-way",
+            "airline": {
+                "code": "UK",
+                "name": "Vistara",
+                "logo": "https://images.daisycon.io/airline/UK.png"
+            },
+            "departure": {
+                "time": "13:20",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "15:45",
+                "code": "DEL",
+                "city": "Delhi",
+                "airport": "Indira Gandhi Intl"
+            },
+            "duration": "2h 55m",
+            "price": "$180",
+            "numericPrice": 180,
+            "stops": [],
+            "journeyDate": "Jan 25, 2026",
+            "isRefundable": true,
+            "baggageSummary": "20KG",
+            "seatsRemaining": 15,
+            "legs": [
+                {
+                    "flightNumber": "102",
+                    "airline": {
+                        "code": "UK",
+                        "name": "Vistara",
+                        "aircraft": "Airbus A320neo",
+                        "logo": "https://images.daisycon.io/airline/UK.png"
+                    },
+                    "departure": {
+                        "time": "13:20",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "15:45",
+                        "code": "DEL",
+                        "city": "Delhi",
+                        "airport": "Indira Gandhi Intl",
+                        "terminal": "3"
+                    },
+                    "duration": "2h 55m",
+                    "stops": [],
+                    "baggage": "20kg",
+                    "amenities": {
+                        "wifi": false,
+                        "meal": true,
+                        "entertainment": false,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "8",
+            "tripType": "multi-city",
+            "airline": {
+                "code": "QR",
+                "name": "Qatar Airways",
+                "logo": "https://images.daisycon.io/airline/QR.png"
+            },
+            "departure": {
+                "time": "03:50",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "12:30",
+                "code": "BKK",
+                "city": "Bangkok",
+                "airport": "Suvarnabhumi Airport"
+            },
+            "duration": "Varies",
+            "price": "$520",
+            "numericPrice": 520,
+            "stops": [
+                "DOH"
+            ],
+            "journeyDate": "Jan 28, 2026",
+            "isRefundable": true,
+            "baggageSummary": "30KG",
+            "seatsRemaining": 5,
+            "legs": [
+                {
+                    "flightNumber": "639",
+                    "airline": {
+                        "code": "QR",
+                        "name": "Qatar Airways",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/QR.png"
+                    },
+                    "departure": {
+                        "time": "03:50",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "06:15",
+                        "code": "DOH",
+                        "city": "Doha",
+                        "airport": "Hamad Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "5h 25m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "836",
+                    "airline": {
+                        "code": "QR",
+                        "name": "Qatar Airways",
+                        "aircraft": "Airbus A350-900",
+                        "logo": "https://images.daisycon.io/airline/QR.png"
+                    },
+                    "departure": {
+                        "time": "02:10",
+                        "code": "DOH",
+                        "city": "Doha",
+                        "airport": "Hamad Intl",
+                        "terminal": "1"
+                    },
+                    "arrival": {
+                        "time": "12:30",
+                        "code": "BKK",
+                        "city": "Bangkok",
+                        "airport": "Suvarnabhumi Airport",
+                        "terminal": "1"
+                    },
+                    "duration": "7h 20m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "1",
+            "airline": {
+                "code": "SQ",
+                "name": "Singapore Airlines",
+                "logo": "https://images.daisycon.io/airline/SQ.png"
+            },
+            "departure": {
+                "time": "11:45",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "18:10",
+                "code": "SIN",
+                "city": "Singapore",
+                "airport": "Changi Airport"
+            },
+            "duration": "4h 25m",
+            "price": "$572",
+            "numericPrice": 572,
+            "tripType": "round-trip",
+            "legs": [
+                {
+                    "flightNumber": "447",
+                    "airline": {
+                        "code": "SQ",
+                        "name": "Singapore Airlines",
+                        "aircraft": "Airbus A350-900",
+                        "logo": "https://images.daisycon.io/airline/SQ.png"
+                    },
+                    "departure": {
+                        "time": "11:45",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "18:10",
+                        "code": "SIN",
+                        "city": "Singapore",
+                        "airport": "Changi Airport",
+                        "terminal": "3"
+                    },
+                    "duration": "4h 25m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": false
+                    }
+                },
+                {
+                    "flightNumber": "448",
+                    "airline": {
+                        "code": "SQ",
+                        "name": "Singapore Airlines",
+                        "aircraft": "Airbus A350-900",
+                        "logo": "https://images.daisycon.io/airline/SQ.png"
+                    },
+                    "departure": {
+                        "time": "20:30",
+                        "code": "SIN",
+                        "city": "Singapore",
+                        "airport": "Changi Airport",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "22:55",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "4h 25m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "2",
+            "airline": {
+                "code": "EK",
+                "name": "Emirates",
+                "logo": "https://images.daisycon.io/airline/EK.png"
+            },
+            "departure": {
+                "time": "01:40",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "12:50",
+                "code": "LHR",
+                "city": "London",
+                "airport": "Heathrow Airport"
+            },
+            "duration": "28h 10m",
+            "price": "$940",
+            "numericPrice": 940,
+            "tripType": "round-trip",
+            "legs": [
+                {
+                    "flightNumber": "585",
+                    "airline": {
+                        "code": "EK",
+                        "name": "Emirates",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/EK.png"
+                    },
+                    "departure": {
+                        "time": "01:40",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "05:40",
+                        "code": "DXB",
+                        "city": "Dubai",
+                        "airport": "Dubai Intl",
+                        "terminal": "3"
+                    },
+                    "duration": "6h 00m",
+                    "stops": [],
+                    "stopDetails": [
+                        {
+                            "city": "Dubai",
+                            "duration": "4h 00m"
+                        }
+                    ],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "29",
+                    "airline": {
+                        "code": "EK",
+                        "name": "Emirates",
+                        "aircraft": "Airbus A380-800",
+                        "logo": "https://images.daisycon.io/airline/EK.png"
+                    },
+                    "departure": {
+                        "time": "09:40",
+                        "code": "DXB",
+                        "city": "Dubai",
+                        "airport": "Dubai Intl",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "12:50",
+                        "code": "LHR",
+                        "city": "London",
+                        "airport": "Heathrow Airport",
+                        "terminal": "3"
+                    },
+                    "duration": "7h 10m",
+                    "stops": [],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": false,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "30",
+                    "airline": {
+                        "code": "EK",
+                        "name": "Emirates",
+                        "aircraft": "Airbus A380-800",
+                        "logo": "https://images.daisycon.io/airline/EK.png"
+                    },
+                    "departure": {
+                        "time": "20:00",
+                        "code": "LHR",
+                        "city": "London",
+                        "airport": "Heathrow Airport",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "07:10",
+                        "code": "DXB",
+                        "city": "Dubai",
+                        "airport": "Dubai Intl",
+                        "terminal": "3"
+                    },
+                    "duration": "7h 10m",
+                    "stops": [],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "586",
+                    "airline": {
+                        "code": "EK",
+                        "name": "Emirates",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/EK.png"
+                    },
+                    "departure": {
+                        "time": "10:30",
+                        "code": "DXB",
+                        "city": "Dubai",
+                        "airport": "Dubai Intl",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "18:20",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "6h 50m",
+                    "stops": [],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "3",
+            "airline": {
+                "code": "QR",
+                "name": "Qatar Airways",
+                "logo": "https://images.daisycon.io/airline/QR.png"
+            },
+            "departure": {
+                "time": "03:50",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "17:35",
+                "code": "JFK",
+                "city": "New York",
+                "airport": "John F. Kennedy Intl"
+            },
+            "duration": "22h 45m",
+            "price": "$1,250",
+            "numericPrice": 1250,
+            "stops": [
+                "DOH"
+            ],
+            "isRefundable": true,
+            "baggageSummary": "2PC (23kg each)",
+            "seatsRemaining": 2,
+            "legs": [
+                {
+                    "flightNumber": "639",
+                    "airline": {
+                        "code": "QR",
+                        "name": "Qatar Airways",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/QR.png"
+                    },
+                    "departure": {
+                        "time": "03:50",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "06:15",
+                        "code": "DOH",
+                        "city": "Doha",
+                        "airport": "Hamad Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "5h 25m",
+                    "stops": [],
+                    "stopDetails": [
+                        {
+                            "city": "Doha",
+                            "duration": "2h 30m"
+                        }
+                    ],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": false,
+                        "entertainment": true,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "701",
+                    "airline": {
+                        "code": "QR",
+                        "name": "Qatar Airways",
+                        "aircraft": "Airbus A350-1000",
+                        "logo": "https://images.daisycon.io/airline/QR.png"
+                    },
+                    "departure": {
+                        "time": "08:45",
+                        "code": "DOH",
+                        "city": "Doha",
+                        "airport": "Hamad Intl",
+                        "terminal": "1"
+                    },
+                    "arrival": {
+                        "time": "17:35",
+                        "code": "JFK",
+                        "city": "New York",
+                        "airport": "John F. Kennedy Intl",
+                        "terminal": "8"
+                    },
+                    "duration": "14h 50m",
+                    "stops": [],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": false,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "4",
+            "airline": {
+                "code": "TK",
+                "name": "Turkish Airlines",
+                "logo": "https://images.daisycon.io/airline/TK.png"
+            },
+            "departure": {
+                "time": "06:30",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "18:45",
+                "code": "JFK",
+                "city": "New York",
+                "airport": "John F. Kennedy Intl"
+            },
+            "duration": "24h 15m",
+            "price": "$1,120",
+            "numericPrice": 1120,
+            "stops": [
+                "IST"
+            ],
+            "isRefundable": true,
+            "baggageSummary": "2PC (23kg each)",
+            "seatsRemaining": 5,
+            "legs": [
+                {
+                    "flightNumber": "713",
+                    "airline": {
+                        "code": "TK",
+                        "name": "Turkish Airlines",
+                        "aircraft": "Airbus A330-300",
+                        "logo": "https://images.daisycon.io/airline/TK.png"
+                    },
+                    "departure": {
+                        "time": "06:30",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "12:50",
+                        "code": "IST",
+                        "city": "Istanbul",
+                        "airport": "Istanbul Airport",
+                        "terminal": "1"
+                    },
+                    "duration": "9h 20m",
+                    "stops": [],
+                    "stopDetails": [
+                        {
+                            "city": "Istanbul",
+                            "duration": "3h 15m"
+                        }
+                    ],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "1",
+                    "airline": {
+                        "code": "TK",
+                        "name": "Turkish Airlines",
+                        "aircraft": "Boeing 777-300ER",
+                        "logo": "https://images.daisycon.io/airline/TK.png"
+                    },
+                    "departure": {
+                        "time": "16:05",
+                        "code": "IST",
+                        "city": "Istanbul",
+                        "airport": "Istanbul Airport",
+                        "terminal": "1"
+                    },
+                    "arrival": {
+                        "time": "18:45",
+                        "code": "JFK",
+                        "city": "New York",
+                        "airport": "John F. Kennedy Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "10h 40m",
+                    "stops": [],
+                    "baggage": "23kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "5",
+            "airline": {
+                "code": "BG",
+                "name": "Biman Bangladesh",
+                "logo": "https://images.daisycon.io/airline/BG.png"
+            },
+            "departure": {
+                "time": "10:30",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "16:10",
+                "code": "LHR",
+                "city": "London",
+                "airport": "Heathrow Airport"
+            },
+            "duration": "11h 40m",
+            "price": "$780",
+            "numericPrice": 780,
+            "tripType": "round-trip",
+            "legs": [
+                {
+                    "flightNumber": "201",
+                    "airline": {
+                        "code": "BG",
+                        "name": "Biman Bangladesh",
+                        "aircraft": "Boeing 787-9 Dreamliner",
+                        "logo": "https://images.daisycon.io/airline/BG.png"
+                    },
+                    "departure": {
+                        "time": "10:30",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "16:10",
+                        "code": "LHR",
+                        "city": "London",
+                        "airport": "Heathrow Airport",
+                        "terminal": "4"
+                    },
+                    "duration": "11h 40m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": false,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "202",
+                    "airline": {
+                        "code": "BG",
+                        "name": "Biman Bangladesh",
+                        "aircraft": "Boeing 787-9 Dreamliner",
+                        "logo": "https://images.daisycon.io/airline/BG.png"
+                    },
+                    "departure": {
+                        "time": "20:00",
+                        "code": "LHR",
+                        "city": "London",
+                        "airport": "Heathrow Airport",
+                        "terminal": "4"
+                    },
+                    "arrival": {
+                        "time": "11:30",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "11h 30m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": false,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        },
+        {
+            "id": "6",
+            "airline": {
+                "code": "SQ",
+                "name": "Singapore Airlines",
+                "logo": "https://images.daisycon.io/airline/SQ.png"
+            },
+            "departure": {
+                "time": "23:55",
+                "code": "DAC",
+                "city": "Dhaka",
+                "airport": "Hazrat Shahjalal Intl"
+            },
+            "arrival": {
+                "time": "06:10",
+                "code": "SIN",
+                "city": "Singapore",
+                "airport": "Changi Airport"
+            },
+            "duration": "6h 15m",
+            "price": "$620",
+            "numericPrice": 620,
+            "tripType": "round-trip",
+            "legs": [
+                {
+                    "flightNumber": "449",
+                    "airline": {
+                        "code": "SQ",
+                        "name": "Singapore Airlines",
+                        "aircraft": "Airbus A350-900",
+                        "logo": "https://images.daisycon.io/airline/SQ.png"
+                    },
+                    "departure": {
+                        "time": "23:55",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "2"
+                    },
+                    "arrival": {
+                        "time": "06:10",
+                        "code": "SIN",
+                        "city": "Singapore",
+                        "airport": "Changi Airport",
+                        "terminal": "3"
+                    },
+                    "duration": "4h 15m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                },
+                {
+                    "flightNumber": "450",
+                    "airline": {
+                        "code": "SQ",
+                        "name": "Singapore Airlines",
+                        "aircraft": "Airbus A350-900",
+                        "logo": "https://images.daisycon.io/airline/SQ.png"
+                    },
+                    "departure": {
+                        "time": "08:30",
+                        "code": "SIN",
+                        "city": "Singapore",
+                        "airport": "Changi Airport",
+                        "terminal": "3"
+                    },
+                    "arrival": {
+                        "time": "10:55",
+                        "code": "DAC",
+                        "city": "Dhaka",
+                        "airport": "Hazrat Shahjalal Intl",
+                        "terminal": "1"
+                    },
+                    "duration": "4h 25m",
+                    "stops": [],
+                    "baggage": "30kg",
+                    "amenities": {
+                        "wifi": true,
+                        "meal": true,
+                        "entertainment": true,
+                        "power": true
+                    }
+                }
+            ]
+        }
+    ],
+    "fareClasses": [
+        {
+            "name": "Economy class",
+            "subName": "Eco Saver",
+            "seatClass": "Economy - S",
+            "price": "+$0",
+            "groups": [
+                {
+                    "title": "Baggage",
+                    "items": [
+                        {
+                            "label": "Personal item: Included",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Carry-on baggage: 1 x 7 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Checked baggage: 1 x 23 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        }
+                    ]
+                },
+                {
+                    "title": "Flexibility",
+                    "items": [
+                        {
+                            "label": "Non-refundable",
+                            "subLabel": "(partial tax refund only)",
+                            "included": false,
+                            "icon": "X"
+                        },
+                        {
+                            "label": "Change fee: from US$165",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "AlertCircle"
+                        }
+                    ]
+                },
+                {
+                    "title": "Other",
+                    "items": [
+                        {
+                            "label": "Standard Seat Selection",
+                            "included": false,
+                            "icon": "Armchair"
+                        },
+                        {
+                            "label": "No Mileage Accrual",
+                            "included": false,
+                            "icon": "X"
+                        }
+                    ]
+                }
+            ],
+            "color": "border-slate-200"
+        },
+        {
+            "name": "Economy class",
+            "subName": "Eco Value",
+            "seatClass": "Economy - V",
+            "price": "+$45",
+            "groups": [
+                {
+                    "title": "Baggage",
+                    "items": [
+                        {
+                            "label": "Personal item: Included",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Carry-on baggage: 1 x 7 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Checked baggage: 1 x 23 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        }
+                    ]
+                },
+                {
+                    "title": "Flexibility",
+                    "items": [
+                        {
+                            "label": "Non-refundable",
+                            "subLabel": "(partial tax refund only)",
+                            "included": false,
+                            "icon": "X"
+                        },
+                        {
+                            "label": "Change fee: from US$100",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "AlertCircle"
+                        }
+                    ]
+                },
+                {
+                    "title": "Other",
+                    "items": [
+                        {
+                            "label": "Seat selection available",
+                            "included": true,
+                            "icon": "Armchair"
+                        },
+                        {
+                            "label": "Meals provided",
+                            "included": true,
+                            "icon": "Utensils"
+                        },
+                        {
+                            "label": "Airline miles: 50%",
+                            "included": true,
+                            "icon": "Plane"
+                        },
+                        {
+                            "label": "Priority Boarding",
+                            "included": false,
+                            "icon": "X"
+                        }
+                    ]
+                }
+            ],
+            "color": "border-[#312d4b] ring-1 ring-[#312d4b]",
+            "badge": "Recommended"
+        },
+        {
+            "name": "Economy class",
+            "subName": "Eco Flex",
+            "seatClass": "Economy - F",
+            "price": "+$120",
+            "groups": [
+                {
+                    "title": "Baggage",
+                    "items": [
+                        {
+                            "label": "Personal item: Included",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Carry-on baggage: 1 x 7 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Checked baggage: 2 x 23 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        }
+                    ]
+                },
+                {
+                    "title": "Flexibility",
+                    "items": [
+                        {
+                            "label": "Cancellation fee: from US$50",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "AlertCircle"
+                        },
+                        {
+                            "label": "Change fee: Free",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "Check"
+                        }
+                    ]
+                },
+                {
+                    "title": "Other",
+                    "items": [
+                        {
+                            "label": "Seat selection included",
+                            "included": true,
+                            "icon": "Armchair"
+                        },
+                        {
+                            "label": "Meals provided",
+                            "included": true,
+                            "icon": "Utensils"
+                        },
+                        {
+                            "label": "Airline miles: 100%",
+                            "included": true,
+                            "icon": "Plane"
+                        },
+                        {
+                            "label": "Priority Boarding",
+                            "included": true,
+                            "icon": "Check"
+                        }
+                    ]
+                }
+            ],
+            "color": "border-slate-200"
+        },
+        {
+            "name": "Premium Economy",
+            "subName": "Premium Saver",
+            "seatClass": "Premium - S",
+            "price": "+$245",
+            "groups": [
+                {
+                    "title": "Baggage",
+                    "items": [
+                        {
+                            "label": "Personal item: Included",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Carry-on baggage: 1 x 10 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Checked baggage: 2 x 23 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        }
+                    ]
+                },
+                {
+                    "title": "Flexibility",
+                    "items": [
+                        {
+                            "label": "Cancellation fee: from US$100",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "AlertCircle"
+                        },
+                        {
+                            "label": "Change fee: US$50",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "AlertCircle"
+                        }
+                    ]
+                },
+                {
+                    "title": "Other",
+                    "items": [
+                        {
+                            "label": "Extra Legroom Seat",
+                            "included": true,
+                            "icon": "Armchair"
+                        },
+                        {
+                            "label": "Premium Meals",
+                            "included": true,
+                            "icon": "Utensils"
+                        },
+                        {
+                            "label": "Airline miles: 125%",
+                            "included": true,
+                            "icon": "Plane"
+                        },
+                        {
+                            "label": "Priority Boarding",
+                            "included": true,
+                            "icon": "Check"
+                        }
+                    ]
+                }
+            ],
+            "color": "border-slate-200"
+        },
+        {
+            "name": "Business Class",
+            "subName": "Biz Elite",
+            "seatClass": "Business - E",
+            "price": "+$550",
+            "groups": [
+                {
+                    "title": "Baggage",
+                    "items": [
+                        {
+                            "label": "Personal item: Included",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Carry-on baggage: 2 x 7 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        },
+                        {
+                            "label": "Checked baggage: 2 x 32 kg",
+                            "included": true,
+                            "icon": "Briefcase"
+                        }
+                    ]
+                },
+                {
+                    "title": "Flexibility",
+                    "items": [
+                        {
+                            "label": "Fully Refundable",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "Check"
+                        },
+                        {
+                            "label": "Change fee: Free",
+                            "included": true,
+                            "highlight": true,
+                            "icon": "Check"
+                        }
+                    ]
+                },
+                {
+                    "title": "Other",
+                    "items": [
+                        {
+                            "label": "Lie-flat Seat",
+                            "included": true,
+                            "icon": "Armchair"
+                        },
+                        {
+                            "label": "Gourmet Dining",
+                            "included": true,
+                            "icon": "Utensils"
+                        },
+                        {
+                            "label": "Lounge Access",
+                            "included": true,
+                            "icon": "Utensils"
+                        },
+                        {
+                            "label": "Airline miles: 200%",
+                            "included": true,
+                            "icon": "Plane"
+                        }
+                    ]
+                }
+            ],
+            "color": "border-purple-200 ring-1 ring-purple-100 bg-purple-50/50",
+            "badge": "Best Experience"
+        }
+    ],
+    "bookings": [
+        {
+            "id": "4412",
+            "bookingDate": "31 Dec 2025",
+            "journeyDate": "08 Apr 2026",
+            "pnr": "FGNXXW",
+            "airlineCode": "QR",
+            "airlineName": "Qatar Airways",
+            "segment": {
+                "from": "DAC",
+                "to": "JFK",
+                "module": "B2B"
+            },
+            "passenger": {
+                "name": "Mr NAFFM HASAN",
+                "type": "Adult"
+            },
+            "fare": {
+                "base": 96410,
+                "tax": 4000,
+                "total": 100410,
+                "currency": "BDT"
+            },
+            "pl": {
+                "amount": 0,
+                "currency": "BDT"
+            },
+            "status": "Pending",
+            "bookedBy": "SkyHunter"
+        },
+        {
+            "id": "4061",
+            "bookingDate": "30 Nov 2025",
+            "journeyDate": "18 Feb 2026",
+            "pnr": "F6BBGQ",
+            "airlineCode": "EK",
+            "airlineName": "Emirates",
+            "segment": {
+                "from": "DAC",
+                "to": "JFK",
+                "module": "B2B"
+            },
+            "passenger": {
+                "name": "Ms MAHRUBIN ALAM",
+                "type": "Adult"
+            },
+            "fare": {
+                "base": 100824,
+                "tax": 0,
+                "total": 100824,
+                "currency": "BDT"
+            },
+            "pl": {
+                "amount": 0,
+                "currency": "BDT"
+            },
+            "status": "Ticketed",
+            "bookedBy": "SkyHunter"
+        },
+        {
+            "id": "3951",
+            "bookingDate": "26 Nov 2025",
+            "journeyDate": "31 Dec 2025",
+            "pnr": "F54CVD",
+            "airlineCode": "AI",
+            "airlineName": "Air India",
+            "segment": {
+                "from": "DEL",
+                "to": "BOM",
+                "module": "B2B"
+            },
+            "passenger": {
+                "name": "Mr Dinesh Yadav",
+                "type": "Adult"
+            },
+            "fare": {
+                "base": 28583,
+                "tax": 500,
+                "total": 29083,
+                "currency": "INR"
+            },
+            "pl": {
+                "amount": 0.2,
+                "currency": "BDT"
+            },
+            "status": "On Hold",
+            "bookedBy": "Embark"
+        },
+        {
+            "id": "3949",
+            "bookingDate": "26 Nov 2025",
+            "journeyDate": "25 Dec 2025",
+            "pnr": "F54C54",
+            "airlineCode": "AI",
+            "airlineName": "Air India",
+            "segment": {
+                "from": "DEL",
+                "to": "BOM",
+                "module": "B2B"
+            },
+            "passenger": {
+                "name": "Mr Dinesh Yadav",
+                "type": "Adult"
+            },
+            "fare": {
+                "base": 85749,
+                "tax": 1000,
+                "total": 86749,
+                "currency": "INR"
+            },
+            "pl": {
+                "amount": 0.3,
+                "currency": "BDT"
+            },
+            "status": "Cancelled",
+            "bookedBy": "Embark"
+        },
+        {
+            "id": "3947",
+            "bookingDate": "25 Nov 2025",
+            "journeyDate": "25 Dec 2025",
+            "pnr": "------",
+            "airlineCode": "BG",
+            "airlineName": "Biman",
+            "segment": {
+                "from": "DAC",
+                "to": "LHR",
+                "module": "B2B"
+            },
+            "passenger": {
+                "name": "Mr Rakesh Singh",
+                "type": "Adult"
+            },
+            "fare": {
+                "base": 85749,
+                "tax": 0,
+                "total": 85749,
+                "currency": "BDT"
+            },
+            "pl": {
+                "amount": 0.3,
+                "currency": "BDT"
+            },
+            "status": "Pending",
+            "bookedBy": "Embark"
+        }
+    ]
+}

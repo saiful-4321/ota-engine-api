@@ -83,3 +83,13 @@ UPLOAD_DIR = "exports"
 ALLOWED_CORS = os.environ.get("ALLOWED_CORS", "*").split(",")
 SECRET_2FA = os.environ.get("SECRET_2FA", "secretkey")
 IS_SELF_SIGNUP_ENABLED=os.environ.get("IS_SELF_SIGNUP_ENABLED", 0)
+
+# Sabre API Configuration
+SABRE_CLIENT_ID = os.environ.get("SABRE_CLIENT_ID", "5B0K-JvBdOta")
+SABRE_CLIENT_SECRET = os.environ.get("SABRE_CLIENT_SECRET", "Pl67azTy")
+SABRE_AUTH_SECRET = os.environ.get("SABRE_AUTH_SECRET", "NUIwSy1KdkJkT3RhOlBsNjdhelR5")  # Pre-computed Base64(client_id:client_secret)
+SABRE_URL = os.environ.get("SABRE_URL", "https://api.cert.platform.sabre.com") # Default to Sabre's Certification (test) environment
+SABRE_PCC = os.environ.get("SABRE_PCC", "N3SL") # Pseudo City Code
+SABRE_USERNAME = os.environ.get("SABRE_USERNAME", "351708-N3SL-AA")
+SABRE_PASSWORD = os.environ.get("SABRE_PASSWORD", "x817k4lc")
+SABRE_TOKEN_EXPIRY_DAYS = int(os.environ.get("SABRE_TOKEN_EXPIRY_DAYS", 7))

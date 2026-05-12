@@ -249,7 +249,7 @@ async def refresh_access_token(
         payload = await token_validation(token=refresh_token, refresh_token=True)
         if payload is None:
             return common_response(status.HTTP_401_UNAUTHORIZED, INVALID_REFRESH_TOKEN)
-        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == payload['username'].lower()).filter(UserModel.account_status == "active").order_by(UserModel.id.asc()).first()
+        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == payload['username'].lower()).filter(UserModel.status == "Active").order_by(UserModel.id.asc()).first()
         if not user:
             return common_response(status.HTTP_401_UNAUTHORIZED, INCORRECT_USERNAME_OR_PASS)
 
@@ -313,7 +313,7 @@ async def forgot_password(request: ForgotPasswordRequest, background_tasks: Back
 @router.post("/resend-otp")
 async def resend_otp(request: ForgotPasswordRequest, background_tasks: BackgroundTasks, otadb: Session = Depends(get_ota_db_session)):
     try:
-        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == request.username.lower()).filter(UserModel.account_status == "active").order_by(UserModel.id.asc()).first()
+        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == request.username.lower()).filter(UserModel.status == "Active").order_by(UserModel.id.asc()).first()
         if not user:
             return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
         if not user.email:
@@ -362,7 +362,7 @@ async def resend_otp(request: ForgotPasswordRequest, background_tasks: Backgroun
 @router.post("/verify-otp")
 async def verify_otp(request: VerifyOtpRequest, otadb: Session = Depends(get_ota_db_session)):
     try:
-        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == request.username.lower()).filter(UserModel.account_status == "active").first()   
+        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == request.username.lower()).filter(UserModel.status == "Active").first()   
         if not user:
             return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
         otp_functions = OTPFunctions(otadb)
@@ -386,7 +386,7 @@ async def reset_forgot_password(
     otadb: Session = Depends(get_ota_db_session), 
 ):
     try:
-        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == request.username.lower()).filter(UserModel.account_status == "active").first()   
+        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == request.username.lower()).filter(UserModel.status == "Active").first()   
         if not user:
             return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
         if request.password != request.confirm_password:
@@ -449,7 +449,7 @@ async def generate_token(input: Login, otadb: Session = Depends(get_ota_db_sessi
                 return common_response(status.HTTP_401_UNAUTHORIZED, INCORRECT_USERNAME_OR_PASS)
         
         access_token_expires = timedelta(days=365*10) # 10 years
-        user_data = {key: getattr(user_info, key) for key in ["id", "user_id", "username", "name", "users_roles", "acc_type"]}  
+        user_data = {key: getattr(user_info, key) for key in ["id", "uuid", "username", "name"]}  
         payload = {**user_data, "name": user_info.name}
         access_token = await create_access_token(data=payload, expires_delta=access_token_expires)
 
@@ -662,7 +662,7 @@ async def verify_otp(
         activity['limit_notification'] = False
         username_from_token = activity.pop("username", None)
         
-        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == username_from_token.lower()).filter(UserModel.account_status == "active").first()   
+        user = otadb.query(UserModel).filter(func.lower(UserModel.username) == username_from_token.lower()).filter(UserModel.status == "Active").first()   
         if not user:
             return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
         

@@ -1,0 +1,116 @@
+{
+  "_readme": "Payload scenarios for /book/pnr endpoint. Covers different passenger types and flight segment structures.",
+  "scenarios": [
+    {
+      "_label": "1. Single Adult - One-way (DAC-SIN)",
+      "flight_segments": [
+        {
+          "departure": "2026-06-15T11:45:00",
+          "origin": "DAC",
+          "destination": "SIN",
+          "airline": "SQ",
+          "flight_number": "447",
+          "cabin_class": "Y"
+        }
+      ],
+      "passengers": [
+        {
+          "first_name": "JOHN",
+          "last_name": "DOE",
+          "passenger_type": "ADT",
+          "gender": "M",
+          "date_of_birth": "1985-05-20",
+          "email": "john.doe@example.com",
+          "phone": "+8801700000000",
+          "document_number": "A12345678",
+          "nationality": "BD"
+        }
+      ],
+      "price_info": {
+        "total_price": 450.0,
+        "currency": "USD"
+      }
+    },
+    {
+      "_label": "2. Family (2 Adults, 1 Child) - Round-trip (LHR-JFK)",
+      "flight_segments": [
+        {
+          "departure": "2026-08-10T10:00:00",
+          "origin": "LHR",
+          "destination": "JFK",
+          "airline": "BA",
+          "flight_number": "117",
+          "cabin_class": "Y"
+        },
+        {
+          "departure": "2026-08-20T18:30:00",
+          "origin": "JFK",
+          "destination": "LHR",
+          "airline": "BA",
+          "flight_number": "116",
+          "cabin_class": "Y"
+        }
+      ],
+      "passengers": [
+        {
+          "first_name": "ALICE",
+          "last_name": "SMITH",
+          "passenger_type": "ADT",
+          "gender": "F",
+          "date_of_birth": "1990-01-15",
+          "email": "alice@example.com",
+          "phone": "+442012345678"
+        },
+        {
+          "first_name": "BOB",
+          "last_name": "SMITH",
+          "passenger_type": "ADT",
+          "gender": "M",
+          "date_of_birth": "1988-11-22"
+        },
+        {
+          "first_name": "CHARLIE",
+          "last_name": "SMITH",
+          "passenger_type": "CNN",
+          "gender": "M",
+          "date_of_birth": "2018-06-30"
+        }
+      ],
+      "price_info": {
+        "total_price": 2100.0,
+        "currency": "GBP"
+      }
+    },
+    {
+      "_label": "3. Business Traveler - One-way (DXB-LHR) with Passport",
+      "flight_segments": [
+        {
+          "DepartureDateTime": "2026-09-01T08:00:00",
+          "OriginLocation": "DXB",
+          "DestinationLocation": "LHR",
+          "MarketingAirline": "EK",
+          "FlightNumber": "1",
+          "ResBookDesigCode": "C"
+        }
+      ],
+      "passengers": [
+        {
+          "first_name": "MICHAEL",
+          "last_name": "ROSS",
+          "passenger_type": "ADT",
+          "gender": "M",
+          "date_of_birth": "1980-12-12",
+          "email": "m.ross@corporate.com",
+          "document_number": "P98765432",
+          "document_expiry": "2030-12-12",
+          "document_issue_country": "US",
+          "nationality": "US"
+        }
+      ],
+      "price_info": {
+        "total_price": 3500.0,
+        "currency": "USD"
+      }
+    }
+  ]
+}

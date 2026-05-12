@@ -15,10 +15,12 @@ def get_controllers(version: str):
         "ReportController",
         "ExportController",
         "IDMController",
+        "SabreController",
+        "SearchController"
     ]
 
     if "ota_api" not in sys.path:
-        sys.path.append("/home/quantpc/pyserver/ota/ota_api")  # Adjust path accordingly
+        sys.path.append("/Users/dev/Developer/SkyNovia/ota-engine-api/ota_api")  # Adjust path accordingly
 
     controllers = {}
     for module in modules:

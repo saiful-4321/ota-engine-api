@@ -1,0 +1,276 @@
+{
+  "_readme": "All /search/flights payload scenarios. cabin_class: Y=Economy, S=Premium Economy, C=Business, J=Premium Business, F=First, P=Premium First. IMPORTANT: corporate_code must match Sabre pattern [A-Za-z]{3}[0-9]{2} (exactly 3 letters + 2 digits, e.g. 'SKY01').",
+
+  "scenarios": [
+
+    {
+      "_label": "1. Basic one-way – economy, 1 adult",
+      "origin": "JFK",
+      "destination": "LHR",
+      "departure_date": "2026-06-10",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y"
+    },
+
+    {
+      "_label": "2. Round-trip – economy, mixed pax",
+      "origin": "JFK",
+      "destination": "LHR",
+      "departure_date": "2026-05-21",
+      "return_date": "2026-05-30",
+      "adults": 2,
+      "children": 1,
+      "infants": 1,
+      "cabin_class": "Y"
+    },
+
+    {
+      "_label": "3. Round-trip – business class, 2 adults",
+      "origin": "DAC",
+      "destination": "DXB",
+      "departure_date": "2026-07-01",
+      "return_date": "2026-07-14",
+      "adults": 2,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "C"
+    },
+
+    {
+      "_label": "4. Round-trip – premium economy, 1 adult",
+      "origin": "SIN",
+      "destination": "SYD",
+      "departure_date": "2026-08-05",
+      "return_date": "2026-08-15",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "S"
+    },
+
+    {
+      "_label": "5. One-way – first class, 1 adult",
+      "origin": "LHR",
+      "destination": "JFK",
+      "departure_date": "2026-09-01",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "F"
+    },
+
+    {
+      "_label": "6. One-way – direct flights only (no stops)",
+      "origin": "DAC",
+      "destination": "SIN",
+      "departure_date": "2026-06-20",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "direct_flights_only": true
+    },
+
+    {
+      "_label": "7. One-way – max 1 stop",
+      "origin": "DAC",
+      "destination": "JFK",
+      "departure_date": "2026-06-25",
+      "adults": 2,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "direct_flights_only": false,
+      "max_stops": 1
+    },
+
+    {
+      "_label": "8. One-way – max 2 stops",
+      "origin": "DAC",
+      "destination": "LAX",
+      "departure_date": "2026-07-10",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "max_stops": 2
+    },
+
+    {
+      "_label": "9. One-way – preferred airline filter (Emirates)",
+      "origin": "DAC",
+      "destination": "LHR",
+      "departure_date": "2026-06-15",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "included_airlines": ["EK"]
+    },
+
+    {
+      "_label": "10. One-way – multiple preferred airlines (Qatar + Turkish)",
+      "origin": "DAC",
+      "destination": "JFK",
+      "departure_date": "2026-06-18",
+      "adults": 2,
+      "children": 1,
+      "infants": 0,
+      "cabin_class": "Y",
+      "included_airlines": ["QR", "TK"]
+    },
+
+    {
+      "_label": "11. One-way – exclude specific airline (Biman)",
+      "origin": "DAC",
+      "destination": "LHR",
+      "departure_date": "2026-07-05",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "excluded_airlines": ["BG"]
+    },
+
+    {
+      "_label": "12. One-way – exclude multiple airlines",
+      "origin": "DAC",
+      "destination": "DXB",
+      "departure_date": "2026-07-08",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "excluded_airlines": ["EK", "FZ"]
+    },
+
+    {
+      "_label": "13. Round-trip – flexible dates (+/- 3 days)",
+      "origin": "JFK",
+      "destination": "CDG",
+      "departure_date": "2026-08-10",
+      "return_date": "2026-08-20",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "flexible_dates": true
+    },
+
+    {
+      "_label": "14. One-way – corporate/negotiated fare (corporate code)",
+      "origin": "DAC",
+      "destination": "DXB",
+      "departure_date": "2026-06-12",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "corporate_code": "COR12"
+    },
+
+    {
+      "_label": "15. One-way – private/account-code fare",
+      "origin": "DAC",
+      "destination": "LHR",
+      "departure_date": "2026-06-22",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "C",
+      "account_code": "ACCT98765"
+    },
+
+    {
+      "_label": "16. Round-trip – all filters combined (direct, preferred airline, flexible dates, business)",
+      "origin": "SIN",
+      "destination": "LHR",
+      "departure_date": "2026-09-10",
+      "return_date": "2026-09-25",
+      "adults": 2,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "C",
+      "direct_flights_only": false,
+      "max_stops": 1,
+      "included_airlines": ["SQ", "BA"],
+      "flexible_dates": true,
+      "corporate_code": "COR99"
+    },
+
+    {
+      "_label": "17. One-way – infants only with adults (infant-on-lap)",
+      "origin": "DAC",
+      "destination": "SIN",
+      "departure_date": "2026-07-20",
+      "adults": 2,
+      "children": 0,
+      "infants": 2,
+      "cabin_class": "Y"
+    },
+
+    {
+      "_label": "18. One-way – large group (6 adults)",
+      "origin": "DEL",
+      "destination": "BKK",
+      "departure_date": "2026-08-01",
+      "adults": 6,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y"
+    },
+
+    {
+      "_label": "19. Round-trip – premium first class (P)",
+      "origin": "JFK",
+      "destination": "NRT",
+      "departure_date": "2026-10-01",
+      "return_date": "2026-10-15",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "P"
+    },
+
+    {
+      "_label": "20. Round-trip – premium business (J), max 1 stop, exclude airlines",
+      "origin": "LHR",
+      "destination": "SYD",
+      "departure_date": "2026-11-05",
+      "return_date": "2026-11-20",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "J",
+      "max_stops": 1,
+      "excluded_airlines": ["MH"]
+    },
+
+    {
+      "_label": "21. One-way – domestic short-haul, economy, direct",
+      "origin": "DEL",
+      "destination": "BOM",
+      "departure_date": "2026-06-05",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "direct_flights_only": true
+    },
+
+    {
+      "_label": "22. Multi-city simulation: DAC->SIN, then SIN->SYD (use multi-leg via max_stops=0 per leg)",
+      "origin": "DAC",
+      "destination": "SYD",
+      "departure_date": "2026-09-01",
+      "adults": 1,
+      "children": 0,
+      "infants": 0,
+      "cabin_class": "Y",
+      "included_airlines": ["SQ"]
+    }
+
+  ]
+}
