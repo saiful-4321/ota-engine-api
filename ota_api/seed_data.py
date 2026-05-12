@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker
 import random
 from datetime import datetime
 from faker import Faker
-from werkzeug.security import generate_password_hash
+from passlib.hash import bcrypt as pwd_context
 from app.models.otadb.User import User
 from app.models.otadb.ActivityLog import ActivityLog
 from app.models.otadb.LoginActivity import LoginActivity
@@ -24,15 +24,12 @@ def seed_users(n=100):
     for _ in range(n):
         users.append({
             "username": fake.user_name(),
-            "password": generate_password_hash('12345'),
+            "password": pwd_context.hash('12345'),
             "email": fake.email(),
             "name": fake.name(),
-            "users_roles": random.choice(['client', 'associate', 'brokeradmin', 'administrator']),
-            "acc_type": random.choice(['individual', 'corporate']),
-            "user_id": fake.uuid4(),
-            "phone": fake.phone_number(),
-            "account_status": 'active',
-            "exchange": 'DSE',
+            "uuid": fake.uuid4(),
+            "phone": fake.phone_number()[:20],
+            "status": 'Active',
             "max_login": 5,
             "logged_in": 0,
             "is_tc_accepted": True,

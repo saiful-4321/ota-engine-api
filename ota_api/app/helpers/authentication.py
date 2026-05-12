@@ -2,10 +2,11 @@ from jose import JWTError, jwt, ExpiredSignatureError
 from sqlalchemy import func
 from app.helpers.common import *
 from datetime import datetime, timedelta
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
+from passlib.hash import bcrypt as pwd_context
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
-from app.models.otadb.User import User as UserModel, UserRoleEnum
+from app.models.otadb.User import User as UserModel
 from app.models.otadb.PasswordPolicySettings import PasswordPolicySettings
 from config import JWT_SECRET_KEY, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_MINUTES, BASIC_AUTH_TOKEN, REDIS_DB, REDIS_AUTH_WEB_DB
 from app.helpers.constants import *
@@ -38,8 +39,6 @@ async def token_validation(token, refresh_token: bool = False):
             "id": payload.get("id"),
             "user_id": payload.get("user_id"),
             "username": payload.get("username"),
-            "users_roles": payload.get("users_roles"),
-            "acc_type": payload.get("acc_type"),
             "device_os": payload.get("device_os", "ANR"),
             "device": payload.get("device"),
             "device_id": payload.get("device_id")
@@ -107,7 +106,7 @@ async def validate_sync_token(token: str = Depends(oauth2_scheme)):
             return None
         
         user_info = otadb.query(
-            UserModel.id, UserModel.user_id, UserModel.username, UserModel.email, UserModel.account_status, UserModel.acc_type, UserModel.users_roles,
+            UserModel.id, UserModel.uuid, UserModel.username, UserModel.email, UserModel.status
         ).filter(
             func.lower(UserModel.username) == username.lower()
         ).order_by(UserModel.id.asc()).first()
@@ -116,14 +115,12 @@ async def validate_sync_token(token: str = Depends(oauth2_scheme)):
             return False
         
         user_dict = dict(user_info)
-        user_roles = user_dict.get('users_roles')
+        # user_roles = user_dict.get('users_roles')
         token_data = {
             "username": username, 
             "id": user_dict.get('id'), 
-            "user_id": user_dict.get('user_id'), 
-            "users_roles": user_roles, 
-            "acc_type": user_dict.get('acc_type'), 
-            "account_status": user_dict.get('account_status'),
+            "uuid": user_dict.get('uuid'), 
+            "status": user_dict.get('status'),
         }
         
         return token_data
@@ -148,23 +145,21 @@ def authenticate_user(username: str, password: str, user: UserModel | None = Non
         if not user:
             return {"status": 404, "message": USER_NOT_FOUND}
 
-        if user.account_status != "active":
+        if user.status.lower() != "active":
             return {"status": 403, "message": INACTIVE_USER}
 
-        allowed_roles = {
-            UserRoleEnum.CLIENT.value,
-            UserRoleEnum.ASSOCIATE.value,
-            UserRoleEnum.BROKERADMIN.value,
-            UserRoleEnum.ADMINISTRATOR.value
-        }
+        # Try passlib first (for Laravel/Bcrypt hashes)
+        is_correct = False
+        try:
+            is_correct = pwd_context.verify(password, user.password)
+        except Exception:
+            # Fallback to werkzeug for old hashes
+            try:
+                is_correct = check_password_hash(user.password, password)
+            except Exception:
+                is_correct = False
 
-        if user.users_roles not in allowed_roles:
-            return {
-                "status": 403,
-                "message": f"Access denied: '{user.users_roles}' type user is not allowed."
-            }
-
-        if not check_password_hash(user.password, password):
+        if not is_correct:
             return {"status": 401, "message": INCORRECT_PASSWORD}
 
         return {"status": 200, "message": SUCCESS, "user": user}
@@ -179,10 +174,21 @@ def authenticate_gen_user(username: str, password: str):
     db = None
     try:
         db = next(get_ota_db_session())
-        user = db.query(UserModel).filter(func.lower(UserModel.username) == username.lower()).filter(UserModel.account_status == "active").order_by(UserModel.id.asc()).first()
+        user = db.query(UserModel).filter(func.lower(UserModel.username) == username.lower()).filter(UserModel.status == "Active").order_by(UserModel.id.asc()).first()
         if not user:
             return False
-        if not check_password_hash(user.password, password):
+        # Try passlib first (for Laravel/Bcrypt hashes)
+        is_correct = False
+        try:
+            is_correct = pwd_context.verify(password, user.password)
+        except Exception:
+            # Fallback to werkzeug for old hashes
+            try:
+                is_correct = check_password_hash(user.password, password)
+            except Exception:
+                is_correct = False
+
+        if not is_correct:
             return False
         return user
     except Exception as e:
@@ -223,7 +229,7 @@ async def get_user_token(user: UserModel, additionalInfo = None, token_only: boo
         except ValueError:
             device_os = AllowedDeviceType.ANR.value
 
-        user_data = {key: getattr(user, key) for key in ["id", "user_id", "username", "name", "users_roles", "acc_type"]}  
+        user_data = {key: getattr(user, key) for key in ["id", "uuid", "username", "name"]}  
         user_data["device_os"] = device_os
         user_data["device"] = device_name.lower()
         user_data["device_id"] = (additionalInfo.get('device_id') if additionalInfo else None)
