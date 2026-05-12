@@ -1,4 +1,4 @@
-from jose import JWTError, jwt, ExpiredSignatureError
+from jose import JWTError, jwt
 from sqlalchemy import func
 from app.helpers.common import *
 from datetime import datetime, timedelta
@@ -175,22 +175,6 @@ def authenticate_user(username: str, password: str, user: UserModel | None = Non
         if db is not None:
             db.close()
 
-def authenticate_gen_user(username: str, password: str):
-    db = None
-    try:
-        db = next(get_ota_db_session())
-        user = db.query(UserModel).filter(func.lower(UserModel.username) == username.lower()).filter(UserModel.account_status == "active").order_by(UserModel.id.asc()).first()
-        if not user:
-            return False
-        if not check_password_hash(user.password, password):
-            return False
-        return user
-    except Exception as e:
-        write_log(get_error_info(e), f"function: authenticate_gen_user, user: {username}")
-        return False
-    finally:
-        if db is not None:
-            db.close()
 
 async def create_access_token(data: dict, expires_delta: timedelta | None = None):
     to_encode = data.copy()
@@ -419,71 +403,6 @@ async def generate_random_password():
         if otadb is not None:
             otadb.close()
 
-async def logout(token: str, isLogoutByEvent=0) -> bool:
-    otadb = None
-    try:
-        otadb = next(get_ota_db_session())
-        payload = None
-
-        try:
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM], options={"verify_exp": False})
-        except ExpiredSignatureError:
-            write_log("Token has already expired. Proceeding with logout.", "logout", type="info")
-        except Exception as jwt_ex:
-            write_log(f"JWT error@logout: {get_error_info(jwt_ex)}", "logout", "info")
-            return False
-        
-        if not payload:
-            return False
-
-        username = payload.get("username")
-        device = payload.get("device").lower()
-
-        if not username:
-            return False
-        
-        # Delete token from Redis
-        if isLogoutByEvent:
-            return True
-            
-        try:
-            user_token_record = otadb.query(UserToken).filter(UserToken.token == token).filter(UserToken.status == UserTokenStatus.VALID).first()
-            if user_token_record:
-                try:
-                    if device == UserDevices.MOBILE.value.lower():
-                        redis_helper.delete_key(token, db=REDIS_DB)
-                    else:
-                        redis_helper.delete_key(token, db=REDIS_AUTH_WEB_DB)
-                except RedisError as redis_ex:
-                    write_log(f"Redis error@logout: {get_error_info(redis_ex)}", "logout")
-                    return False
-                otadb.delete(user_token_record)
-                otadb.commit()
-                user = otadb.query(UserModel).filter(UserModel.username == username).first()
-                if user:
-                    if device == UserDevices.MOBILE.value.lower():
-                        user.logged_in_mobile = max(user.logged_in_mobile - 1, 0)
-                    else:
-                        user.logged_in = max(user.logged_in - 1, 0)
-
-                    user.total_logged_in = max(user.total_logged_in - 1, 0)
-                    otadb.commit()
-                    login_activity(user, remarks="Logout", device_type=UserDevices.MOBILE.value if device == UserDevices.MOBILE.value.lower() else UserDevices.DESKTOP.value, conn_number=user.logged_in_mobile if device == UserDevices.MOBILE.value.lower() else user.logged_in)
-                    return True
-
-            return False
-        except Exception as e:
-            write_log(f"DB error@logout: {get_error_info(e)}", "logout")
-        return False
-
-    except Exception as e:
-        if otadb:
-            otadb.rollback()
-        write_log(get_error_info(e), "logout")
-        return False
-    finally:
-        if otadb:
-            otadb.close()
 
 def register_fcm_token(username: str, fcm_token: str):
     otadb = None

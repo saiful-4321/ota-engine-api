@@ -2,9 +2,9 @@ from datetime import datetime, date
 from typing import Optional, List, Dict
 import ipaddress
 
-from pydantic import BaseModel, Field, constr, conint, validator, EmailStr
+from pydantic import BaseModel, Field, constr, validator, EmailStr
 from app.models.enums import (
-    UserDevices, FileType
+    FileType
 )
 
 class UserSchema(BaseModel):
@@ -59,19 +59,10 @@ class RolePermissionUpdate(BaseModel):
         description="List of permissions to assign to the role"
     )
 
-class UsernamePasswordBase(BaseModel):
-    username: constr(min_length=1, max_length=30, strip_whitespace=True) #type: ignore
-    password: constr(min_length=3, max_length=30, strip_whitespace=True) #type: ignore
 
-#Auth schemas
-class Login(UsernamePasswordBase):
-    user_device: UserDevices = UserDevices.MOBILE
 
 class ForgotPasswordRequest(BaseModel):
     username: constr(min_length=1, max_length=30, strip_whitespace=True) #type: ignore
-
-class LogoutSchema(BaseModel):
-    isLogoutByEvent: Optional[conint(ge=0, le=1)] = 0
 
 class VerifyOtpRequest(BaseModel):
     username: constr(min_length=1, max_length=30, strip_whitespace=True) #type: ignore
@@ -86,6 +77,8 @@ class User2FASetting(BaseModel):
     setting_2fa: bool
 
 class ResetForgetPasswordRequest(BaseModel):
+    username: constr(min_length=1, max_length=30, strip_whitespace=True) #type: ignore
+    password: constr(min_length=3, max_length=30, strip_whitespace=True) #type: ignore
     confirm_password: constr(min_length=3, max_length=30, strip_whitespace=True) #type: ignore
 
 
@@ -98,12 +91,3 @@ class UserQueryParams(BaseModel):
     from_date: Optional[date] = None
     to_date: Optional[date] = None
     file_type: FileType
-
-class SignupSchema(BaseModel):
-    client_code: constr(min_length=1, max_length=10, strip_whitespace=True) #type: ignore
-    is_tc_accepted: int=1
-
-
-class SignupConfirmSchema(BaseModel):
-    client_code: constr(min_length=1, max_length=10, strip_whitespace=True) #type: ignore
-    otp: constr(min_length=4, max_length=8, strip_whitespace=True) #type: ignore

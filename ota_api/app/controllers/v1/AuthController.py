@@ -12,8 +12,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from fastapi import APIRouter, Depends, status, BackgroundTasks, Header, Request, Form
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2AuthorizationCodeBearer
 from app.models.otadb.AppVersion import AppVersion
-from app.helpers.authentication import create_access_token, authenticate_gen_user, register_fcm_token, token_validation, logout
-from app.models.schemas import Verify2FAOtpRequest, SignupSchema, SignupConfirmSchema, LogoutSchema, ForgotPasswordRequest, VerifyOtpRequest, ResetForgetPasswordRequest, Login
+from app.helpers.authentication import create_access_token, register_fcm_token, token_validation
+from app.models.schemas import Verify2FAOtpRequest, ForgotPasswordRequest, VerifyOtpRequest, ResetForgetPasswordRequest
 # from app.models.otadb.ClientsActive import ClientsActive
 from app.models.otadb.User import User
 from app.models.otadb.UserSetting import UserSetting
@@ -419,49 +419,7 @@ async def reset_forgot_password(
     finally:
         otadb.close()
     
-@router.post("/logout")
-async def user_logout(request: Optional[LogoutSchema] = None, Authorization: str = Header(None)):
-    try:
-        inputData = request or LogoutSchema()
 
-        if not Authorization or not Authorization.startswith("Bearer ") and not Authorization.startswith("bearer "):
-            return common_response(status.HTTP_400_BAD_REQUEST, INVALID_REQUEST)
-
-        _, token = Authorization.split(" ", 1)
-
-        if token:
-            success = await logout(token, isLogoutByEvent=inputData.isLogoutByEvent)
-            if success:
-                return common_response(status.HTTP_200_OK, SUCCESS)
-            else:
-                return common_response(status.HTTP_400_BAD_REQUEST, "Logout failed")
-        else:
-            return common_response(status.HTTP_400_BAD_REQUEST, INVALID_REQUEST)
-    except Exception as e:
-        write_log(get_error_info(e), "logout")
-        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
-
-@router.post('/generate-token')
-async def generate_token(input: Login, otadb: Session = Depends(get_ota_db_session)):
-    try:
-        user_info = authenticate_gen_user(username=input.username, password=input.password)
-        if not user_info:
-                return common_response(status.HTTP_401_UNAUTHORIZED, INCORRECT_USERNAME_OR_PASS)
-        
-        access_token_expires = timedelta(days=365*10) # 10 years
-        user_data = {key: getattr(user_info, key) for key in ["id", "user_id", "username", "name", "users_roles", "acc_type"]}  
-        payload = {**user_data, "name": user_info.name}
-        access_token = await create_access_token(data=payload, expires_delta=access_token_expires)
-
-        try:
-            redis_helper.set_data_ttl(access_token, input.username, 365*10*24*60) # 10 years in minutes
-        except RedisError as redis_ex:
-            print(f"Redis error: {get_error_info(redis_ex)}")
-
-        return access_token
-    except Exception as e:
-        write_log(get_error_info(e), "generate-token")
-        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
 
 # @router.post('/signup')
 # async def client_self_signup(background_tasks: BackgroundTasks, input: SignupSchema, otadb: Session = Depends(get_ota_db_session)):
