@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from datetime import datetime
 from fastapi import Path
 from app.utils.permission_helper import require_permission
+from app.models.otadb.SearchRequest import SearchRequest
 import asyncio
 import uuid
 
@@ -54,9 +55,12 @@ async def get_user_list(
             "created_at": Users.created_at,
         }
 
+        sort_by = sort_by.strip() if sort_by and sort_by.strip() else "created_at"
+        sort_order = sort_order.strip().lower() if sort_order and sort_order.strip() else "desc"
+
         if sort_by not in valid_sort_columns:
             return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_by field", {})
-        if sort_order.lower() not in ["asc", "desc"]:
+        if sort_order not in ["asc", "desc"]:
             return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_order value", {})
 
         # Base query with filters
@@ -71,16 +75,16 @@ async def get_user_list(
                 # Usually if ID is provided but invalid format, return empty.
                 # return common_response(http_status.HTTP_200_OK, SUCCESS, {"data": [], "total": 0})
         
-        if name:
-            base_query = base_query.filter(Users.name.ilike(f"%{name}%"))
-        if username:
-            base_query = base_query.filter(Users.username.ilike(f"%{username}%"))
-        if email:
-            base_query = base_query.filter(Users.email.ilike(f"%{email}%"))
-        if mobile:
-            base_query = base_query.filter(Users.mobile.ilike(f"%{mobile}%"))
+        if name and name.strip():
+            base_query = base_query.filter(Users.name.ilike(f"%{name.strip()}%"))
+        if username and username.strip():
+            base_query = base_query.filter(Users.username.ilike(f"%{username.strip()}%"))
+        if email and email.strip():
+            base_query = base_query.filter(Users.email.ilike(f"%{email.strip()}%"))
+        if mobile and mobile.strip():
+            base_query = base_query.filter(Users.mobile.ilike(f"%{mobile.strip()}%"))
         
-        if status:
+        if status and status.strip():
              if status.lower() == 'active':
                 base_query = base_query.filter(Users.status == True)
              elif status.lower() == 'inactive':
@@ -215,20 +219,23 @@ async def get_api_logs(
             "process_time": APILog.process_time,
         }
 
+        sort_by = sort_by.strip() if sort_by and sort_by.strip() else "timestamp"
+        sort_order = sort_order.strip().lower() if sort_order and sort_order.strip() else "desc"
+
         if sort_by not in valid_sort_columns:
             return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_by field", {})
-        if sort_order.lower() not in ["asc", "desc"]:
+        if sort_order not in ["asc", "desc"]:
             return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_order value", {})
 
         # === Base Query with Filters ===
         query = ota_db.query(APILog.id, APILog.timestamp, APILog.method, APILog.url, APILog.client_ip, APILog.headers, APILog.query_params, APILog.request_body, APILog.user_agent, APILog.response_status, APILog.response_size, APILog.response_body, APILog.process_time, APILog.raw_request_body, APILog.error_message, APILog.error_details, APILog.username)
 
-        if method:
-            query = query.filter(APILog.method.ilike(f"%{method}%"))
-        if url:
-            query = query.filter(APILog.url.ilike(f"%{url}%"))
-        if client_ip:
-            query = query.filter(APILog.client_ip.ilike(f"%{client_ip}%"))
+        if method and method.strip():
+            query = query.filter(APILog.method.ilike(f"%{method.strip()}%"))
+        if url and url.strip():
+            query = query.filter(APILog.url.ilike(f"%{url.strip()}%"))
+        if client_ip and client_ip.strip():
+            query = query.filter(APILog.client_ip.ilike(f"%{client_ip.strip()}%"))
         if status_code:
             query = query.filter(APILog.response_status == status_code)
         if start_date:
@@ -349,9 +356,12 @@ async def get_callback_api_logs(
             "response_status": CallbackApiLog.response_status,
         }
 
+        sort_by = sort_by.strip() if sort_by and sort_by.strip() else "timestamp"
+        sort_order = sort_order.strip().lower() if sort_order and sort_order.strip() else "desc"
+
         if sort_by not in valid_sort_columns:
             return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_by field", {})
-        if sort_order.lower() not in ["asc", "desc"]:
+        if sort_order not in ["asc", "desc"]:
             return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_order value", {})
 
         # === Base Query ===
@@ -368,12 +378,12 @@ async def get_callback_api_logs(
         )
 
         # === Filters ===
-        if source:
-            query = query.filter(CallbackApiLog.source.ilike(f"%{source}%"))
-        if log_source:
-            query = query.filter(CallbackApiLog.log_source.ilike(f"%{log_source}%"))
-        if url:
-            query = query.filter(CallbackApiLog.url.ilike(f"%{url}%"))
+        if source and source.strip():
+            query = query.filter(CallbackApiLog.source.ilike(f"%{source.strip()}%"))
+        if log_source and log_source.strip():
+            query = query.filter(CallbackApiLog.log_source.ilike(f"%{log_source.strip()}%"))
+        if url and url.strip():
+            query = query.filter(CallbackApiLog.url.ilike(f"%{url.strip()}%"))
         if response_status is not None:
             query = query.filter(CallbackApiLog.response_status == response_status)
         if start_date:
@@ -452,6 +462,173 @@ async def get_callback_api_log_details(
         return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, e)
     except Exception as ex:
         write_log(get_error_info(ex), f"/callback-api-log/{log_id}")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, ex)
+    finally:
+        ota_db.close()
+
+@router.get("/flight-search-logs")
+async def get_flight_search_logs(
+    request: Request,
+    ota_db: Session = Depends(get_ota_db_session),
+    supplier: str = Query(None),
+    origin: str = Query(None),
+    destination: str = Query(None),
+    user_id: str = Query(None),
+    status: str = Query(None),
+    start_date: str = Query(None),
+    end_date: str = Query(None),
+    sort_by: str = Query("created_at"),
+    sort_order: str = Query("desc"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, le=100)
+):
+    try:
+        # permission_check = await require_permission(request, "view_api_logs")
+        # if permission_check:
+        #     return permission_check
+
+        valid_sort_columns = {
+            "id": SearchRequest.id,
+            "created_at": SearchRequest.created_at,
+            "supplier": SearchRequest.supplier,
+            "origin": SearchRequest.origin,
+            "destination": SearchRequest.destination,
+            "status": SearchRequest.status,
+            "result_count": SearchRequest.result_count
+        }
+
+        sort_by = sort_by.strip() if sort_by and sort_by.strip() else "created_at"
+        sort_order = sort_order.strip().lower() if sort_order and sort_order.strip() else "desc"
+
+        if sort_by not in valid_sort_columns:
+            return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_by field", {})
+        if sort_order not in ["asc", "desc"]:
+            return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_order value", {})
+
+        # === Base Query ===
+        query = ota_db.query(
+            SearchRequest.id,
+            SearchRequest.search_id,
+            SearchRequest.user_id,
+            SearchRequest.supplier,
+            SearchRequest.trip_type,
+            SearchRequest.origin,
+            SearchRequest.destination,
+            SearchRequest.departure_date,
+            SearchRequest.return_date,
+            SearchRequest.currency,
+            SearchRequest.result_count,
+            SearchRequest.status,
+            SearchRequest.created_at
+        )
+
+        # === Filters ===
+        if supplier and supplier.strip():
+            query = query.filter(SearchRequest.supplier.ilike(f"%{supplier.strip()}%"))
+        if origin and origin.strip():
+            query = query.filter(SearchRequest.origin == origin.strip().upper())
+        if destination and destination.strip():
+            query = query.filter(SearchRequest.destination == destination.strip().upper())
+        if user_id and user_id.strip():
+            query = query.filter(SearchRequest.user_id == user_id.strip())
+        if status and status.strip():
+            query = query.filter(SearchRequest.status == status.strip().lower())
+
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                query = query.filter(SearchRequest.created_at >= start_dt)
+            except ValueError:
+                return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid start_date format. Use YYYY-MM-DD.", {})
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                query = query.filter(SearchRequest.created_at <= end_dt)
+            except ValueError:
+                return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid end_date format. Use YYYY-MM-DD.", {})
+
+        # === Summary Aggregates ===
+        summary_data = query.with_entities(
+            func.count().label("total_logs"),
+            func.sum(case((SearchRequest.status == 'success', 1), else_=0)).label("success_logs"),
+            func.sum(case((SearchRequest.status == 'error', 1), else_=0)).label("failed_logs"),
+            func.avg(SearchRequest.result_count).label("avg_results")
+        ).first()
+
+        # === Sorting ===
+        sort_column = valid_sort_columns[sort_by]
+        query = query.order_by(asc(sort_column) if sort_order == "asc" else desc(sort_column))
+
+        # === Pagination ===
+        paginated_data = custom_paginate(request, query, ota_db)
+
+        # === Final Response ===
+        response = {
+            "summary": {
+                "total_count": summary_data.total_logs or 0,
+                "success_count": int(summary_data.success_logs or 0),
+                "failed_count": int(summary_data.failed_logs or 0),
+                "avg_results_per_search": round(float(summary_data.avg_results or 0), 2),
+            },
+            **paginated_data
+        }
+
+        return common_response(http_status.HTTP_200_OK, SUCCESS, response)
+
+    except SQLAlchemyError as e:
+        write_log(get_error_info(e), "/flight-search-logs")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, e)
+    except Exception as ex:
+        write_log(get_error_info(ex), "/flight-search-logs")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, ex)
+    finally:
+        ota_db.close()
+
+@router.get("/flight-search-log/{search_id}")
+async def get_flight_search_log_details(
+    search_id: str = Path(..., description="The search_id (UUID) or internal ID"),
+    ota_db: Session = Depends(get_ota_db_session),
+):
+    try:
+        # Try finding by search_id (UUID string)
+        log = ota_db.query(SearchRequest).filter(SearchRequest.search_id == search_id).first()
+        
+        # If not found and search_id is an integer, try finding by internal id
+        if not log and search_id.isdigit():
+            log = ota_db.query(SearchRequest).filter(SearchRequest.id == int(search_id)).first()
+
+        if not log:
+            return common_response(http_status.HTTP_404_NOT_FOUND, DATA_NOT_FOUND, {})
+
+        response = {
+            "id": log.id,
+            "search_id": log.search_id,
+            "user_id": log.user_id,
+            "session_id": log.session_id,
+            "supplier": log.supplier,
+            "trip_type": log.trip_type,
+            "cabin_class": log.cabin_class,
+            "adults": log.adults,
+            "children": log.children,
+            "infants": log.infants,
+            "origin": log.origin,
+            "destination": log.destination,
+            "departure_date": log.departure_date,
+            "return_date": log.return_date,
+            "currency": log.currency,
+            "result_count": log.result_count,
+            "request_metadata": log.request_metadata,
+            "status": log.status,
+            "created_at": log.created_at,
+        }
+
+        return common_response(http_status.HTTP_200_OK, SUCCESS, response)
+
+    except SQLAlchemyError as e:
+        write_log(get_error_info(e), f"/flight-search-log/{search_id}")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, e)
+    except Exception as ex:
+        write_log(get_error_info(ex), f"/flight-search-log/{search_id}")
         return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, ex)
     finally:
         ota_db.close()
