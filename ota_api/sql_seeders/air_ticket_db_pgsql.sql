@@ -31,33 +31,36 @@ CREATE TYPE ticket_status_enum AS ENUM (
 );
 
 
-#============Search Requests============#
-CREATE TABLE search_requests (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID,
-    trip_type VARCHAR(20) NOT NULL,
-    cabin_class VARCHAR(20) NOT NULL,
-    adults INTEGER DEFAULT 1,
-    children INTEGER DEFAULT 0,
-    infants INTEGER DEFAULT 0,
-    origin VARCHAR(3) NOT NULL,
-    destination VARCHAR(3) NOT NULL,
-    departure_date DATE NOT NULL,
-    return_date DATE,
-    currency VARCHAR(3) DEFAULT 'USD',
-    ip_address VARCHAR(45),
-    user_agent TEXT,
-    created_at TIMESTAMP DEFAULT NOW()
+#============Flight Search Requests Log============#
+CREATE TABLE flight_search_requests_log (
+    id               BIGSERIAL    PRIMARY KEY,
+    search_id        UUID         NOT NULL UNIQUE,              -- client-facing reference ID
+    user_id          UUID,                                       -- NULL for guests
+    session_id       VARCHAR(100),                               -- optional frontend session token
+    supplier         VARCHAR(20)  NOT NULL DEFAULT 'sabre',      -- GDS supplier key
+    trip_type        VARCHAR(20)  NOT NULL,
+    cabin_class      VARCHAR(20)  NOT NULL,
+    adults           INTEGER      DEFAULT 1,
+    children         INTEGER      DEFAULT 0,
+    infants          INTEGER      DEFAULT 0,
+    origin           VARCHAR(3)   NOT NULL,
+    destination      VARCHAR(3)   NOT NULL,
+    departure_date   DATE         NOT NULL,
+    return_date      DATE,
+    currency         VARCHAR(3)   DEFAULT 'USD',
+    result_count     INTEGER,    -- number of flights returned
+    request_metadata JSONB,      -- {supplier_response_time_ms, api_response_time_ms, ip_address, user_agent, ...}
+    status           VARCHAR(20) NOT NULL DEFAULT 'success',     -- 'success' | 'error'
+    created_at       TIMESTAMP   DEFAULT NOW()
 );
 
-CREATE INDEX idx_search_route
-ON search_requests(origin, destination);
-
-CREATE INDEX idx_search_departure
-ON search_requests(departure_date);
-
-CREATE INDEX idx_search_created_at
-ON search_requests(created_at);
+CREATE INDEX idx_fsrl_user_id     ON flight_search_requests_log(user_id);
+CREATE INDEX idx_fsrl_supplier    ON flight_search_requests_log(supplier);
+CREATE INDEX idx_fsrl_route       ON flight_search_requests_log(origin, destination);
+CREATE INDEX idx_fsrl_departure   ON flight_search_requests_log(departure_date);
+CREATE INDEX idx_fsrl_created_at  ON flight_search_requests_log(created_at DESC);
+CREATE INDEX idx_fsrl_status      ON flight_search_requests_log(status);
+#============Flight Search Requests Log============#
 
 #============Search Results============#
 

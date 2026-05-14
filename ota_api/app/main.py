@@ -65,8 +65,8 @@ for version in versions:
     if "IDMController" in controllers:
         app.include_router(controllers["IDMController"].router, prefix=f"/api/{version}/idm", tags=[f"Import {version.upper()}"])    
     
-    if "SabreController" in controllers:
-        app.include_router(controllers["SabreController"].router, prefix=f"/api/{version}/sabre", tags=[f"Sabre Provider {version.upper()}"])
+    if "FlightController" in controllers:
+        app.include_router(controllers["FlightController"].router, prefix=f"/api/{version}/flights", tags=[f"Flights {version.upper()}"]) 
 
 # Processing job start
 # @app.on_event("startup")

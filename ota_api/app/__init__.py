@@ -15,7 +15,7 @@ def get_controllers(version: str):
         "ReportController",
         "ExportController",
         "IDMController",
-        "SabreController"
+        "FlightController",
     ]
 
     if "ota_api" not in sys.path:

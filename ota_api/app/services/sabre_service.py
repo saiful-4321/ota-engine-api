@@ -122,10 +122,13 @@ class SabreFlightService(SabreBaseService):
         # NegotiatedFareCode must match pattern [A-Za-z]{3}[0-9]{2} (e.g. "ABC12").
         _neg_fare_pattern = re.compile(r'^[A-Za-z]{3}[0-9]{2}$')
 
-        if search_params.corporate_code or search_params.account_code:
+        if search_params.corporate_code or search_params.account_code or search_params.currency:
             price_req = payload["OTA_AirLowFareSearchRQ"]["TravelerInfoSummary"].setdefault(
                 "PriceRequestInformation", {}
             )
+
+            if search_params.currency:
+                price_req["CurrencyCode"] = search_params.currency
 
             if search_params.corporate_code:
                 if _neg_fare_pattern.match(search_params.corporate_code):

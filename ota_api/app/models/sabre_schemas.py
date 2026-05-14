@@ -19,6 +19,7 @@ class FlightSearchRequest(BaseModel):
     flexible_dates: Optional[bool] = Field(False, description="Search +/- 1-3 days around the requested dates for cheaper fares.")
     corporate_code: Optional[str] = Field(None, description="Agency corporate ID or discount code.")
     account_code: Optional[str] = Field(None, description="Negotiated account code for private fares.")
+    currency: Optional[str] = Field("BDT", description="Preferred currency code (e.g., USD, EUR, BDT)")
 
 class PricingRequestPassenger(BaseModel):
     passenger_type: str = Field(..., description="Type of passenger (ADT, CNN, INF)")
@@ -27,6 +28,7 @@ class PricingRequestPassenger(BaseModel):
 class FlightPricingRequest(BaseModel):
     flight_segments: List[Dict[str, Any]] = Field(..., description="List of flight segments from search response")
     passengers: List[PricingRequestPassenger] = Field(..., description="List of passenger counts and types")
+    currency: Optional[str] = Field("BDT", description="Currency code for revalidation (e.g., USD, BDT)")
 
 class BookingPassenger(BaseModel):
     first_name: str
