@@ -2,8 +2,17 @@ import uuid
 import datetime
 from typing import Optional, Dict, Any
 
-from app.models.sabre_schemas import FlightSearchRequest
+from app.models.sabre_schemas import FlightSearchRequest, FlightBookingRequest, TicketingRequest
 from app.models.otadb.SearchRequest import SearchRequest
+from app.models.otadb.Booking import Booking
+from app.models.otadb.BookingSegment import BookingSegment
+from app.models.otadb.BookingPassenger import BookingPassenger
+from app.models.otadb.Ticket import Ticket
+from app.models.otadb.Supplier import Supplier
+from app.models.otadb.SupplierLog import SupplierLog
+from app.models.otadb.Payment import Payment
+from app.models.otadb.Refund import Refund
+from app.models.otadb.BookingStatusHistory import BookingStatusHistory
 from app.helpers.common import get_ota_db_session, write_log
 
 
@@ -47,5 +56,271 @@ def log_search_request(
     except Exception as exc:
         db.rollback()
         write_log(exc, source="flight.logger.log_search_request", type="warning")
+    finally:
+        db.close()
+
+def _parse_dt(dt_str: Any) -> datetime.datetime:
+    """Helper to parse datetime strings safely."""
+    if not dt_str or not isinstance(dt_str, str):
+        return datetime.datetime.utcnow()
+    try:
+        # Remove 'Z' if present and replace 'T' with space
+        clean = dt_str.replace('Z', '').replace('T', ' ')
+        return datetime.datetime.fromisoformat(clean)
+    except Exception:
+        return datetime.datetime.utcnow()
+
+def _parse_date(d_str: Any) -> Optional[datetime.date]:
+    """Helper to parse date strings safely."""
+    if not d_str or not isinstance(d_str, str):
+        return None
+    try:
+        return datetime.date.fromisoformat(d_str)
+    except Exception:
+        return None
+def log_booking(
+    request: FlightBookingRequest,
+    response: Dict[str, Any],
+    supplier_code: str,
+    user_id: Optional[str] = None,
+) -> None:
+    """
+    Logs a successful booking (PNR creation) to the database.
+    """
+    db = next(get_ota_db_session())
+    try:
+        # 1. Resolve Supplier ID
+        supplier = db.query(Supplier).filter(Supplier.code == supplier_code).first()
+        supplier_id = supplier.id if supplier else None
+
+        # 2. Extract PNR from Sabre Response
+        # Note: Response structure varies by supplier. This assumes Sabre format.
+        itinerary_ref = response.get("CreatePassengerNameRecordRS", {}).get("ItineraryRef", {})
+        pnr = itinerary_ref.get("ID") or response.get("pnr") or response.get("id")
+
+        if not pnr:
+            write_log("Could not find PNR in response", source="flight.logger.log_booking", type="warning")
+            return
+
+        # 3. Extract Price Info
+        pi = request.price_info
+        total_amount    = pi.get("total_fare") or pi.get("totalFare") or pi.get("total_amount") or 0
+        base_fare       = pi.get("base_fare") or pi.get("baseFare") or 0
+        tax_amount      = pi.get("tax_amount") or pi.get("taxAmount") or pi.get("taxes") or 0
+        service_fee     = pi.get("service_fee") or pi.get("serviceFee") or 0
+        discount_amount = pi.get("discount_amount") or pi.get("discountAmount") or 0
+        
+        # 4. Create Booking Header
+        booking = Booking(
+            booking_reference = f"SN{uuid.uuid4().hex[:8].upper()}",
+            user_id           = user_id or "0", 
+            supplier_id       = supplier_id,
+            booking_status    = 'CONFIRMED',
+            payment_status    = 'PENDING',
+            pnr               = pnr,
+            supplier_booking_id = pnr,
+            currency          = pi.get("currency", "BDT"),
+            base_fare         = base_fare,
+            tax_amount        = tax_amount,
+            service_fee       = service_fee,
+            discount_amount   = discount_amount,
+            total_amount      = total_amount,
+        )
+        db.add(booking)
+        db.flush() # Get booking.id
+
+        # 4. Create Segments
+        for i, seg in enumerate(request.flight_segments):
+            # Try to get dates from various possible keys
+            dep_str = seg.get("departure") or seg.get("DepartureDateTime") or ""
+            arr_str = seg.get("arrival") or seg.get("ArrivalDateTime") or ""
+            
+            segment = BookingSegment(
+                booking_id     = booking.id,
+                segment_number = i + 1,
+                airline_code   = seg.get("airline") or seg.get("MarketingAirline", {}).get("Code", "XX"),
+                flight_number  = str(seg.get("flight_number") or seg.get("FlightNumber", "")),
+                origin         = (seg.get("origin") or seg.get("OriginLocation", {}).get("LocationCode", "")).upper(),
+                destination    = (seg.get("destination") or seg.get("DestinationLocation", {}).get("LocationCode", "")).upper(),
+                departure_datetime = _parse_dt(dep_str),
+                arrival_datetime   = _parse_dt(arr_str),
+                cabin_class    = seg.get("cabin_class") or seg.get("ResBookDesigCode", "Y"),
+            )
+            db.add(segment)
+
+        # 5. Create Passengers
+        for pax in request.passengers:
+            passenger = BookingPassenger(
+                booking_id     = booking.id,
+                passenger_type = pax.passenger_type,
+                title          = None,
+                first_name     = pax.first_name,
+                last_name      = pax.last_name,
+                gender         = pax.gender,
+                date_of_birth  = _parse_date(pax.date_of_birth),
+                passport_number = pax.document_number,
+                email          = pax.email,
+                phone          = pax.phone,
+            )
+            db.add(passenger)
+
+        # 6. Record Status History
+        history = BookingStatusHistory(
+            booking_id = booking.id,
+            old_status = None,
+            new_status = 'CONFIRMED',
+            remarks    = "Booking created and confirmed by supplier"
+        )
+        db.add(history)
+
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        write_log(exc, source="flight.logger.log_booking", type="error")
+    finally:
+        db.close()
+
+def log_ticket(
+    request: TicketingRequest,
+    response: Dict[str, Any],
+    supplier_code: str,
+) -> None:
+    """
+    Logs ticket issuance to the database.
+    """
+    db = next(get_ota_db_session())
+    try:
+        # Find the booking by PNR
+        booking = db.query(Booking).filter(Booking.pnr == request.pnr).first()
+        if not booking:
+            write_log(f"Booking not found for PNR {request.pnr}", source="flight.logger.log_ticket", type="warning")
+            return
+
+        # Extract ticket numbers from response
+        # Sabre REST 1.3.0 usually returns tickets in AirTicketRS -> Summary
+        tickets_data = response.get("AirTicketRS", {}).get("Summary", [])
+        if not tickets_data:
+            # Fallback for other versions or structures
+            tickets_data = response.get("AirTicketRS", {}).get("TicketDetails", [])
+        
+        # If still empty, try to find any "TicketNumber" in the response (recursive search)
+        if not tickets_data:
+            ticket_numbers = []
+            def find_tickets(obj):
+                if isinstance(obj, dict):
+                    if "TicketNumber" in obj:
+                        ticket_numbers.append(obj["TicketNumber"])
+                    for v in obj.values():
+                        find_tickets(v)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        find_tickets(item)
+            find_tickets(response)
+            
+            for tn in ticket_numbers:
+                tickets_data.append({"TicketNumber": tn})
+        
+        for t_data in tickets_data:
+            ticket_number = t_data.get("TicketNumber")
+            pax_name = t_data.get("PassengerName", "") # To link to passenger
+            
+            # Simple heuristic to link to passenger by name if possible
+            # In a real system, we should have more robust linking
+            passenger = db.query(BookingPassenger).filter(
+                BookingPassenger.booking_id == booking.id
+            ).first() # Just take first for now if we can't link
+
+            ticket = Ticket(
+                booking_id     = booking.id,
+                passenger_id   = passenger.id if passenger else None,
+                ticket_number  = ticket_number,
+                ticket_status  = 'ISSUED',
+                validating_carrier = request.validating_carrier,
+                issue_date     = datetime.datetime.utcnow(),
+            )
+            db.add(ticket)
+        
+        old_status = booking.booking_status
+        booking.booking_status = 'TICKETED'
+        booking.issued_at = datetime.datetime.utcnow()
+        
+        # Record Status History
+        history = BookingStatusHistory(
+            booking_id = booking.id,
+            old_status = old_status,
+            new_status = 'TICKETED',
+            remarks    = "Ticket(s) issued successfully"
+        )
+        db.add(history)
+        
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        write_log(exc, source="flight.logger.log_ticket", type="error")
+    finally:
+        db.close()
+
+def log_supplier_call(
+    supplier_code: str,
+    endpoint: str,
+    request_payload: Any,
+    response_payload: Any,
+    response_time_ms: int,
+    status_code: int
+) -> None:
+    """
+    Logs raw supplier API calls for debugging and auditing.
+    """
+    db = next(get_ota_db_session())
+    try:
+        supplier = db.query(Supplier).filter(Supplier.code == supplier_code).first()
+        entry = SupplierLog(
+            supplier_id      = supplier.id if supplier else None,
+            endpoint         = endpoint,
+            request_payload  = request_payload,
+            response_payload = response_payload,
+            response_time_ms = response_time_ms,
+            status_code      = status_code
+        )
+        db.add(entry)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        write_log(exc, source="flight.logger.log_supplier_call", type="warning")
+    finally:
+        db.close()
+
+def update_booking_status(
+    booking_id: str,
+    new_status: str,
+    remarks: Optional[str] = None,
+    changed_by: Optional[str] = None
+) -> bool:
+    """
+    Updates booking status and records the change in history.
+    """
+    db = next(get_ota_db_session())
+    try:
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            return False
+
+        old_status = booking.booking_status
+        booking.booking_status = new_status
+        
+        history = BookingStatusHistory(
+            booking_id = booking.id,
+            old_status = old_status,
+            new_status = new_status,
+            remarks    = remarks,
+            changed_by = changed_by
+        )
+        db.add(history)
+        db.commit()
+        return True
+    except Exception as exc:
+        db.rollback()
+        write_log(exc, source="flight.logger.update_booking_status", type="error")
+        return False
     finally:
         db.close()

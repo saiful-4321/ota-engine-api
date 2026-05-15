@@ -12,6 +12,7 @@ from app.models.sabre_schemas import (
 )
 from app.helpers.flight import (
     DEFAULT_SUPPLIER, resolve_supplier, log_search_request,
+    log_booking, log_ticket,
     format_error_response, format_search_response, format_pricing_response,
     format_pnr_response, format_pnr_details_response, format_cancel_response,
     format_ticketing_response, format_fare_rules_response,
@@ -135,9 +136,26 @@ async def price_flight(request: FlightPricingRequest, supplier: str = _S):
 
 @router.post("/book", summary="Create Booking (PNR)",
              description="Creates a passenger name record to lock in the reservation.")
-async def book_flight(request: FlightBookingRequest, supplier: str = _S):
+async def book_flight(
+    request: FlightBookingRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+    supplier: str = _S
+):
     try:
-        return format_pnr_response(supplier, resolve_supplier(supplier).create_pnr(request))
+        response = resolve_supplier(supplier).create_pnr(request)
+        formatted = format_pnr_response(supplier, response)
+        
+        # Log successful booking
+        background_tasks.add_task(
+            log_booking,
+            request = request,
+            response = response,
+            supplier_code = supplier,
+            user_id = get_optional_user_id(http_request)
+        )
+        
+        return formatted
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -183,9 +201,24 @@ async def queue_place(request: QueueRequest, supplier: str = _S):
 
 @router.post("/ticket/issue", summary="Issue Ticket",
              description="Issues an electronic air ticket for a reservation (PNR).")
-async def ticket_issue(request: TicketingRequest, supplier: str = _S):
+async def ticket_issue(
+    request: TicketingRequest,
+    background_tasks: BackgroundTasks,
+    supplier: str = _S
+):
     try:
-        return format_ticketing_response(supplier, resolve_supplier(supplier).issue_ticket(request))
+        response = resolve_supplier(supplier).issue_ticket(request)
+        formatted = format_ticketing_response(supplier, response)
+        
+        # Log ticket issuance
+        background_tasks.add_task(
+            log_ticket,
+            request = request,
+            response = response,
+            supplier_code = supplier
+        )
+        
+        return formatted
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:

@@ -9,10 +9,20 @@ SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 
 
--- ============================================================
--- NOTE: MySQL does not support named/reusable ENUM types.
--- ENUMs are defined inline per column below.
--- ============================================================
+-- ============Suppliers============ --
+CREATE TABLE IF NOT EXISTS suppliers (
+    id          BIGINT          NOT NULL AUTO_INCREMENT,
+    name        VARCHAR(100)    NOT NULL UNIQUE,
+    code        VARCHAR(20)     NOT NULL UNIQUE,  -- 'sabre', 'amadeus', etc.
+    description VARCHAR(255),
+    is_active   TINYINT(1)      NOT NULL DEFAULT 1,
+    created_at  TIMESTAMP       NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMP       NOT NULL DEFAULT NOW() ON UPDATE NOW(),
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO suppliers (name, code) VALUES ('Sabre GDS', 'sabre');
+-- ============Suppliers============ --
 
 
 -- ============Flight Search Requests Log============ --
@@ -31,7 +41,7 @@ CREATE TABLE flight_search_requests_log (
     destination      VARCHAR(3)   NOT NULL,
     departure_date   DATE         NOT NULL,
     return_date      DATE,
-    currency         VARCHAR(3)   NOT NULL DEFAULT 'USD',
+    currency         VARCHAR(3)   NOT NULL DEFAULT 'BDT',
     result_count     INT,    -- number of flights returned
     request_metadata JSON,   -- {supplier_response_time_ms, api_response_time_ms, ip_address, user_agent, ...}
     status           VARCHAR(20) NOT NULL DEFAULT 'success',   -- 'success' | 'error'

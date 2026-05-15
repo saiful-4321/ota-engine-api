@@ -10,7 +10,10 @@ from app.helpers.flight.registry import (
     DEFAULT_SUPPLIER,
     resolve_supplier,
 )
-from app.helpers.flight.logger import log_search_request
+from app.helpers.flight.logger import (
+    log_search_request, log_booking, log_ticket, 
+    log_supplier_call, update_booking_status
+)
 from app.utils.flight import (
     format_error_response,
     format_search_response,
@@ -27,6 +30,10 @@ __all__ = [
     "DEFAULT_SUPPLIER",
     "resolve_supplier",
     "log_search_request",
+    "log_booking",
+    "log_ticket",
+    "log_supplier_call",
+    "update_booking_status",
     "format_error_response",
     "format_search_response",
     "format_pricing_response",

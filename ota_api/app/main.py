@@ -15,6 +15,7 @@ from app.middleware.APILogMiddleware import APILogMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from config import ALLOWED_CORS, APP_NAME, APP_ENV
 import logging
+# from app.models import otadb  # Ensure all models are registered
 
 if APP_ENV == "PROD":
     app = FastAPI(title=APP_NAME, docs_url=None, redoc_url=None)

@@ -8,12 +8,25 @@ import math
 
 def custom_paginate(request: Request, query, db, res_key = 'items'):
     try:       
-        current_page = int(request.query_params["page"])  if "page" in request.query_params else 1
+        current_page = int(request.query_params["page"]) if "page" in request.query_params else 1
         per_page = int(request.query_params.get("per_page", request.query_params.get("limit", DEFAULT_PAGINATION)))
-        total_count_query = select([func.count().label('total_count')]).select_from(query)
-        total_count = db.execute(total_count_query).scalar()
-        last_page = math.ceil(total_count/per_page)
-        data = db.execute(query.offset((current_page - 1) * per_page).limit(per_page)).all()
+        
+        # Determine if we are dealing with a SQLAlchemy Query object or a core Select object
+        if hasattr(query, 'count'):
+            # ORM Query object
+            total_count = query.count()
+            data = query.offset((current_page - 1) * per_page).limit(per_page).all()
+        else:
+            # Core Select object or fallback
+            total_count_query = select([func.count()]).select_from(query.alias('sub'))
+            total_count = db.execute(total_count_query).scalar()
+            data = db.execute(query.offset((current_page - 1) * per_page).limit(per_page)).all()
+            
+            # Flatten rows if they contain single entities
+            if data and len(data[0]) == 1:
+                data = [row[0] for row in data]
+
+        last_page = math.ceil(total_count / per_page) if per_page > 0 else 0
 
         paginate_data = {
             res_key: data,
@@ -26,4 +39,4 @@ def custom_paginate(request: Request, query, db, res_key = 'items'):
         return paginate_data
     except Exception as ex:
         write_log(ex, 'app.services.customPagination.py')
-        return {}
+        return {res_key: [], 'total_count': 0, 'current_page': 1, 'last_page': 0}

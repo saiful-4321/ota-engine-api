@@ -12,6 +12,15 @@ from datetime import datetime
 from fastapi import Path
 from app.utils.permission_helper import require_permission
 from app.models.otadb.SearchRequest import SearchRequest
+from app.models.otadb.Booking import Booking
+from app.models.otadb.BookingSegment import BookingSegment
+from app.models.otadb.BookingPassenger import BookingPassenger
+from app.models.otadb.Ticket import Ticket
+from app.models.otadb.Supplier import Supplier
+from app.models.otadb.Payment import Payment
+from app.models.otadb.Refund import Refund
+from app.models.otadb.BookingStatusHistory import BookingStatusHistory
+from app.models.otadb.SupplierLog import SupplierLog
 import asyncio
 import uuid
 
@@ -629,6 +638,156 @@ async def get_flight_search_log_details(
         return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, e)
     except Exception as ex:
         write_log(get_error_info(ex), f"/flight-search-log/{search_id}")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, ex)
+    finally:
+        ota_db.close()
+
+@router.get("/bookings")
+async def get_bookings_list(
+    request: Request,
+    ota_db: Session = Depends(get_ota_db_session),
+    pnr: str = Query(None),
+    user_id: str = Query(None),
+    booking_status: str = Query(None),
+    payment_status: str = Query(None),
+    start_date: str = Query(None),
+    end_date: str = Query(None),
+    sort_by: str = Query("created_at"),
+    sort_order: str = Query("desc"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, le=100)
+):
+    try:
+        # permission_check = await require_permission(request, "view_dashboard_analytics")
+        # if permission_check:
+        #     return permission_check
+
+        valid_sort_columns = {
+            "id": Booking.id,
+            "created_at": Booking.created_at,
+            "booking_reference": Booking.booking_reference,
+            "total_amount": Booking.total_amount,
+            "booking_status": Booking.booking_status
+        }
+
+        sort_by = sort_by.strip() if sort_by and sort_by.strip() else "created_at"
+        sort_order = sort_order.strip().lower() if sort_order and sort_order.strip() else "desc"
+
+        if sort_by not in valid_sort_columns:
+            return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_by field", {})
+        if sort_order not in ["asc", "desc"]:
+            return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_order value", {})
+
+        # === Base Query ===
+        query = ota_db.query(Booking)
+
+        # === Filters ===
+        if pnr and pnr.strip():
+            query = query.filter(Booking.pnr.ilike(f"%{pnr.strip()}%"))
+        if user_id and user_id.strip():
+            query = query.filter(Booking.user_id == user_id.strip())
+        if booking_status and booking_status.strip():
+            query = query.filter(Booking.booking_status == booking_status.strip().upper())
+        if payment_status and payment_status.strip():
+            query = query.filter(Booking.payment_status == payment_status.strip().upper())
+
+        if start_date:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                query = query.filter(Booking.created_at >= start_dt)
+            except ValueError:
+                return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid start_date format. Use YYYY-MM-DD.", {})
+        if end_date:
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                query = query.filter(Booking.created_at <= end_dt)
+            except ValueError:
+                return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid end_date format. Use YYYY-MM-DD.", {})
+
+        # === Sorting ===
+        sort_column = valid_sort_columns[sort_by]
+        query = query.order_by(asc(sort_column) if sort_order == "asc" else desc(sort_column))
+
+        # === Pagination ===
+        paginated_data = custom_paginate(request, query, ota_db)
+
+        return common_response(http_status.HTTP_200_OK, SUCCESS, paginated_data)
+
+    except SQLAlchemyError as e:
+        write_log(get_error_info(e), "/bookings")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, e)
+    except Exception as ex:
+        write_log(get_error_info(ex), "/bookings")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, ex)
+    finally:
+        ota_db.close()
+
+@router.get("/booking/{booking_id}")
+async def get_booking_details(
+    booking_id: str = Path(...),
+    ota_db: Session = Depends(get_ota_db_session),
+):
+    try:
+        booking = ota_db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking:
+            # Try finding by reference or PNR if not a UUID
+            booking = ota_db.query(Booking).filter(
+                (Booking.booking_reference == booking_id) | 
+                (Booking.pnr == booking_id)
+            ).first()
+
+        if not booking:
+            return common_response(http_status.HTTP_404_NOT_FOUND, DATA_NOT_FOUND, {})
+
+        # Build detailed response
+        response = {
+            "booking_info": {
+                "id": booking.id,
+                "reference": booking.booking_reference,
+                "pnr": booking.pnr,
+                "status": booking.booking_status,
+                "payment_status": booking.payment_status,
+                "total_amount": float(booking.total_amount),
+                "currency": booking.currency,
+                "created_at": booking.created_at,
+            },
+            "segments": [
+                {
+                    "airline": s.airline_code,
+                    "flight_number": s.flight_number,
+                    "origin": s.origin,
+                    "destination": s.destination,
+                    "departure": s.departure_datetime,
+                    "arrival": s.arrival_datetime,
+                    "cabin": s.cabin_class,
+                } for s in booking.segments
+            ],
+            "passengers": [
+                {
+                    "type": p.passenger_type,
+                    "name": f"{p.first_name} {p.last_name}",
+                    "gender": p.gender,
+                    "dob": p.date_of_birth,
+                    "passport": p.passport_number,
+                } for p in booking.passengers
+            ],
+            "tickets": [
+                {
+                    "number": t.ticket_number,
+                    "status": t.ticket_status,
+                    "carrier": t.validating_carrier,
+                    "issue_date": t.issue_date,
+                } for t in booking.tickets
+            ]
+        }
+
+        return common_response(http_status.HTTP_200_OK, SUCCESS, response)
+
+    except SQLAlchemyError as e:
+        write_log(get_error_info(e), f"/booking/{booking_id}")
+        return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, e)
+    except Exception as ex:
+        write_log(get_error_info(ex), f"/booking/{booking_id}")
         return common_response(http_status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, {}, ex)
     finally:
         ota_db.close()

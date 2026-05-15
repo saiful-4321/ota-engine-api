@@ -31,6 +31,21 @@ CREATE TYPE ticket_status_enum AS ENUM (
 );
 
 
+-- ============Suppliers============ --
+CREATE TABLE IF NOT EXISTS suppliers (
+    id          BIGSERIAL       PRIMARY KEY,
+    name        VARCHAR(100)    NOT NULL UNIQUE,
+    code        VARCHAR(20)     NOT NULL UNIQUE,  -- 'sabre', 'amadeus', etc.
+    description VARCHAR(255),
+    is_active   BOOLEAN         NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMP       DEFAULT NOW(),
+    updated_at  TIMESTAMP       DEFAULT NOW()
+);
+
+INSERT INTO suppliers (name, code) VALUES ('Sabre GDS', 'sabre') ON CONFLICT (code) DO NOTHING;
+-- ============Suppliers============ --
+
+
 #============Flight Search Requests Log============#
 CREATE TABLE flight_search_requests_log (
     id               BIGSERIAL    PRIMARY KEY,
@@ -47,7 +62,7 @@ CREATE TABLE flight_search_requests_log (
     destination      VARCHAR(3)   NOT NULL,
     departure_date   DATE         NOT NULL,
     return_date      DATE,
-    currency         VARCHAR(3)   DEFAULT 'USD',
+    currency         VARCHAR(3)   DEFAULT 'BDT',
     result_count     INTEGER,    -- number of flights returned
     request_metadata JSONB,      -- {supplier_response_time_ms, api_response_time_ms, ip_address, user_agent, ...}
     status           VARCHAR(20) NOT NULL DEFAULT 'success',     -- 'success' | 'error'
