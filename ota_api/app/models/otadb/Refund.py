@@ -1,15 +1,16 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DECIMAL, TIMESTAMP, ForeignKey
+from sqlalchemy import Column, String, DECIMAL, TIMESTAMP, ForeignKey, BigInteger
 from sqlalchemy.orm import relationship
 from databases.database import OtaDbBase
 
 class Refund(OtaDbBase):
     __tablename__ = "refunds"
 
-    id                  = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    booking_id          = Column(String(36), ForeignKey("bookings.id"), nullable=False, index=True)
-    ticket_id           = Column(String(36), ForeignKey("tickets.id"), nullable=False, index=True)
+    id                  = Column(BigInteger, primary_key=True, autoincrement=True)
+    uuid                = Column(String(36), default=lambda: str(uuid.uuid4()), unique=True, index=True)
+    booking_id          = Column(BigInteger, ForeignKey("bookings.id"), nullable=False, index=True)
+    ticket_id           = Column(BigInteger, ForeignKey("tickets.id"), nullable=False, index=True)
     
     refund_status       = Column(String(50), nullable=True)
     refund_amount       = Column(DECIMAL(12,2), nullable=True)

@@ -12,13 +12,15 @@ SET time_zone = '+00:00';
 -- ============Suppliers============ --
 CREATE TABLE IF NOT EXISTS suppliers (
     id          BIGINT          NOT NULL AUTO_INCREMENT,
+    uuid        CHAR(36)        NOT NULL,
     name        VARCHAR(100)    NOT NULL UNIQUE,
     code        VARCHAR(20)     NOT NULL UNIQUE,  -- 'sabre', 'amadeus', etc.
     description VARCHAR(255),
     is_active   TINYINT(1)      NOT NULL DEFAULT 1,
     created_at  TIMESTAMP       NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMP       NOT NULL DEFAULT NOW() ON UPDATE NOW(),
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    UNIQUE KEY idx_suppliers_uuid (uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO suppliers (name, code) VALUES ('Sabre GDS', 'sabre');
@@ -67,7 +69,8 @@ CREATE INDEX idx_fsrl_status             ON flight_search_requests_log (status);
 
 -- ============Bookings============ --
 CREATE TABLE bookings (
-    id                  CHAR(36)        NOT NULL DEFAULT (UUID()),
+    id                  BIGINT          NOT NULL AUTO_INCREMENT,
+    uuid                CHAR(36)        NOT NULL,
     booking_reference   VARCHAR(20)     NOT NULL,
     user_id             CHAR(36)        NOT NULL,
     supplier_id         BIGINT,
@@ -95,12 +98,13 @@ CREATE TABLE bookings (
     service_fee         DECIMAL(12,2)   NOT NULL DEFAULT 0.00,
     discount_amount     DECIMAL(12,2)   NOT NULL DEFAULT 0.00,
     total_amount        DECIMAL(12,2)   NOT NULL DEFAULT 0.00,
-    booking_expiry      TIMESTAMP       NULL DEFAULT NULL,
+    booking_expiry      TIMESTAMP       NULL DEFAULT '1970-01-01 00:00:00',
     issued_at           TIMESTAMP       NULL DEFAULT NULL,
     created_at          TIMESTAMP       NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMP       NOT NULL DEFAULT NOW() ON UPDATE NOW(),
 
     PRIMARY KEY (id),
+    UNIQUE KEY idx_booking_uuid (uuid),
     UNIQUE KEY idx_booking_reference (booking_reference),
 
     CONSTRAINT fk_bookings_supplier
@@ -120,7 +124,7 @@ CREATE INDEX idx_booking_pnr      ON bookings (pnr);
 -- ============Booking Segments============ --
 CREATE TABLE booking_segments (
     id                  BIGINT          NOT NULL AUTO_INCREMENT,
-    booking_id          CHAR(36)        NOT NULL,
+    booking_id          BIGINT          NOT NULL,
     segment_number      INT             NOT NULL,
     airline_code        VARCHAR(2)      NOT NULL,
     flight_number       VARCHAR(10)     NOT NULL,
@@ -152,8 +156,9 @@ CREATE INDEX idx_segments_airline   ON booking_segments (airline_code);
 
 -- ============Booking Passengers============ --
 CREATE TABLE booking_passengers (
-    id                      CHAR(36)    NOT NULL DEFAULT (UUID()),
-    booking_id              CHAR(36)    NOT NULL,
+    id                      BIGINT      NOT NULL AUTO_INCREMENT,
+    uuid                    CHAR(36)    NOT NULL,
+    booking_id              BIGINT      NOT NULL,
     passenger_type          ENUM('ADT', 'CHD', 'INF') NOT NULL,
     title                   VARCHAR(20),
     first_name              VARCHAR(100) NOT NULL,
@@ -170,6 +175,7 @@ CREATE TABLE booking_passengers (
     created_at              TIMESTAMP   NOT NULL DEFAULT NOW(),
 
     PRIMARY KEY (id),
+    UNIQUE KEY idx_passenger_uuid (uuid),
 
     CONSTRAINT fk_passengers_booking
         FOREIGN KEY (booking_id) REFERENCES bookings (id)
@@ -185,10 +191,13 @@ CREATE INDEX idx_passenger_name     ON booking_passengers (last_name, first_name
 
 -- ============Booking Tickets============ --
 CREATE TABLE tickets (
-    id                  CHAR(36)    NOT NULL DEFAULT (UUID()),
-    booking_id          CHAR(36)    NOT NULL,
-    passenger_id        CHAR(36)    NOT NULL,
+    id                  BIGINT      NOT NULL AUTO_INCREMENT,
+    uuid                CHAR(36)    NOT NULL,
+    booking_id          BIGINT      NOT NULL,
+    passenger_id        BIGINT      NOT NULL,
     ticket_number       VARCHAR(20) NOT NULL,
+    pnr                 VARCHAR(20),
+    fare_basis          VARCHAR(50),
     ticket_status       ENUM(
                             'ISSUED',
                             'VOID',
@@ -201,6 +210,7 @@ CREATE TABLE tickets (
     created_at          TIMESTAMP   NOT NULL DEFAULT NOW(),
 
     PRIMARY KEY (id),
+    UNIQUE KEY idx_ticket_uuid (uuid),
     UNIQUE KEY idx_ticket_number (ticket_number),
 
     CONSTRAINT fk_tickets_booking
@@ -221,8 +231,9 @@ CREATE INDEX idx_ticket_passenger ON tickets (passenger_id);
 
 -- ============Booking Payments============ --
 CREATE TABLE payments (
-    id               CHAR(36)      NOT NULL DEFAULT (UUID()),
-    booking_id       CHAR(36)      NOT NULL,
+    id               BIGINT        NOT NULL AUTO_INCREMENT,
+    uuid             CHAR(36)      NOT NULL,
+    booking_id       BIGINT        NOT NULL,
     payment_gateway  VARCHAR(50),
     transaction_id   VARCHAR(255),
     payment_status   ENUM(
@@ -238,6 +249,7 @@ CREATE TABLE payments (
     created_at       TIMESTAMP     NOT NULL DEFAULT NOW(),
 
     PRIMARY KEY (id),
+    UNIQUE KEY idx_payment_uuid (uuid),
     UNIQUE KEY idx_payment_transaction (transaction_id),
 
     CONSTRAINT fk_payments_booking
@@ -254,9 +266,10 @@ CREATE INDEX idx_payment_created ON payments (created_at DESC);
 
 -- ============Booking Refunds============ --
 CREATE TABLE refunds (
-    id                  CHAR(36)      NOT NULL DEFAULT (UUID()),
-    booking_id          CHAR(36)      NOT NULL,
-    ticket_id           CHAR(36)      NOT NULL,
+    id                  BIGINT        NOT NULL AUTO_INCREMENT,
+    uuid                CHAR(36)      NOT NULL,
+    booking_id          BIGINT        NOT NULL,
+    ticket_id           BIGINT        NOT NULL,
     refund_status       VARCHAR(50),
     refund_amount       DECIMAL(12,2),
     airline_penalty     DECIMAL(12,2),
@@ -265,6 +278,7 @@ CREATE TABLE refunds (
     created_at          TIMESTAMP     NOT NULL DEFAULT NOW(),
 
     PRIMARY KEY (id),
+    UNIQUE KEY idx_refund_uuid (uuid),
 
     CONSTRAINT fk_refunds_booking
         FOREIGN KEY (booking_id) REFERENCES bookings (id)
@@ -285,7 +299,7 @@ CREATE INDEX idx_refund_ticket  ON refunds (ticket_id);
 -- ============Booking Status History============ --
 CREATE TABLE booking_status_history (
     id          BIGINT  NOT NULL AUTO_INCREMENT,
-    booking_id  CHAR(36) NOT NULL,
+    booking_id  BIGINT  NOT NULL,
     old_status  ENUM(
                     'PENDING',
                     'HOLD',

@@ -44,11 +44,13 @@ CREATE TABLE activity_log (
 DROP TABLE IF EXISTS announcement;
 CREATE TABLE announcement (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  uuid CHAR(36) NOT NULL,
   user_role VARCHAR(255) NOT NULL,
   title VARCHAR(255) NOT NULL,
   text LONGTEXT NOT NULL,
   created_by VARCHAR(255) NOT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY idx_announcement_uuid (uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ========================
@@ -57,8 +59,10 @@ CREATE TABLE announcement (
 DROP TABLE IF EXISTS app_versions;
 CREATE TABLE app_versions (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  uuid CHAR(36) NOT NULL,
   version VARCHAR(255),
   created_at DATETIME,
+  UNIQUE KEY idx_app_versions_uuid (uuid),
   INDEX ix_app_versions_version (version)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -135,13 +139,15 @@ CREATE TABLE login_activity (
 DROP TABLE IF EXISTS notification_panel;
 CREATE TABLE notification_panel (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  uuid CHAR(36) NOT NULL,
   sender VARCHAR(255),
   receiver VARCHAR(255),
   title VARCHAR(255),
   details VARCHAR(255),
   status VARCHAR(255),
   response_link VARCHAR(255),
-  last_update DATETIME DEFAULT CURRENT_TIMESTAMP
+  last_update DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY idx_notification_uuid (uuid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ========================
@@ -150,6 +156,7 @@ CREATE TABLE notification_panel (
 DROP TABLE IF EXISTS users;
 CREATE TABLE users (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  uuid CHAR(36) NOT NULL,
   username VARCHAR(255),
   password VARCHAR(255),
   email VARCHAR(255),
@@ -162,17 +169,12 @@ CREATE TABLE users (
   phone_status VARCHAR(255),
   phone VARCHAR(255),
   account_status VARCHAR(255),
-  exchange VARCHAR(255),
-  max_login INT,
-  logged_in INT,
+  max_login_web INT,
+  logged_in_web INT,
   last_login VARCHAR(255),
   login_ip VARCHAR(255),
-  premium TINYINT(1),
   first_login TINYINT(1),
   parking_enabled TINYINT(1),
-  is_bulk_order TINYINT(1),
-  premium_start_date VARCHAR(255),
-  premium_end_date VARCHAR(255),
   max_login_mobile INT,
   logged_in_mobile INT,
   total_max_login INT,
@@ -180,6 +182,7 @@ CREATE TABLE users (
   fcm_token VARCHAR(255),
   is_tc_accepted TINYINT(1) NOT NULL DEFAULT 1,
   is_2fa_enabled TINYINT(1) DEFAULT 1,
+  UNIQUE KEY idx_users_uuid (uuid),
   UNIQUE KEY ix_users_email (email),
   INDEX ix_users_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

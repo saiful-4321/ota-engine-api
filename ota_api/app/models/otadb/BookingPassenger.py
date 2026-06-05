@@ -1,14 +1,15 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, TIMESTAMP, ForeignKey, Enum, Date
+from sqlalchemy import Column, String, Integer, TIMESTAMP, ForeignKey, Enum, Date, BigInteger
 from sqlalchemy.orm import relationship
 from databases.database import OtaDbBase
 
 class BookingPassenger(OtaDbBase):
     __tablename__ = "booking_passengers"
 
-    id                      = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    booking_id              = Column(String(36), ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    id                      = Column(BigInteger, primary_key=True, autoincrement=True)
+    uuid                    = Column(String(36), default=lambda: str(uuid.uuid4()), unique=True, index=True)
+    booking_id              = Column(BigInteger, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
     
     passenger_type          = Column(Enum('ADT', 'CHD', 'INF', name='passenger_type_enum'), nullable=False)
     title                   = Column(String(20), nullable=True)

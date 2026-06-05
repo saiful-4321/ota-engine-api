@@ -10,7 +10,7 @@ from datetime import datetime
 import uuid
 from typing import Optional
 from app.models.schemas import UserSchema
-from werkzeug.security import generate_password_hash
+from app.helpers.password_utils import hash_password
 from app.utils.permission_helper import require_permission
 
 router = APIRouter()
@@ -177,7 +177,7 @@ async def create_user(
             username=input.username,
             email=input.email,
             mobile=input.mobile,
-            password=generate_password_hash(input.password),  # Hash password
+            password=hash_password(input.password),  # Hash password
             user_role=input.user_role,
             entity_type=input.entity_type,
             entity_id=input.entity_id,
@@ -244,7 +244,7 @@ async def update_user(
         user.email = input.email
         user.mobile = input.mobile
         if input.password:  # Update password only if provided
-            user.password = generate_password_hash(input.password)
+            user.password = hash_password(input.password)
         user.user_role = input.user_role
         user.entity_type = input.entity_type
         user.entity_id = input.entity_id

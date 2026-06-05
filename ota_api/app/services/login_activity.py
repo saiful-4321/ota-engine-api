@@ -31,7 +31,6 @@ def login_activity(
             'username': user.username, 
             'user_role': user_role, 
             'branch': user.branch, 
-            'exchange': user.exchange, 
             'name': user.name, 
             'ip': user.login_ip, 
             'location': activity['location'] if activity else None, 

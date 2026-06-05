@@ -8,7 +8,7 @@ from app.services.otp import OTPFunctions
 from app.services.mail import MailFunctions
 from app.models.otadb.User import User as UserModel
 from app.models.otadb.Otp import OtpStatus
-from werkzeug.security import generate_password_hash, check_password_hash
+from app.helpers.password_utils import verify_password, hash_password
 from fastapi import APIRouter, Depends, status, BackgroundTasks, Header, Request, Form
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2AuthorizationCodeBearer
 from app.models.otadb.AppVersion import AppVersion
@@ -175,8 +175,8 @@ async def remove_session(
         if device.lower() == UserDevices.MOBILE.value.lower():
             db_user.logged_in_mobile += 1
         else:
-            db_user.logged_in += 1
-        db_user.total_logged_in = db_user.logged_in + db_user.logged_in_mobile
+            db_user.logged_in_web += 1
+        db_user.total_logged_in = db_user.logged_in_web + db_user.logged_in_mobile
 
         if db_user.total_logged_in > db_user.total_max_login:            
             result = remove_tokens(
@@ -185,12 +185,12 @@ async def remove_session(
             )
             if not result['status']:
                 return common_response(result['code'], result['message'])
-            db_user.logged_in = 0
+            db_user.logged_in_web = 0
             db_user.logged_in_mobile = 0
             db_user.total_logged_in = 0 
             message = 'All sessions removed'
 
-        elif db_user.logged_in > db_user.max_login:            
+        elif db_user.logged_in_web > db_user.max_login_web:            
             result = remove_tokens(
                 username=db_user.username,
                 device=UserDevices.DESKTOP
@@ -199,7 +199,7 @@ async def remove_session(
             if not result['status']:
                 return common_response(result['code'], result['message'])   
             
-            db_user.logged_in = 0
+            db_user.logged_in_web = 0
             db_user.total_logged_in = max(db_user.logged_in_mobile, 0)
             message = f'All {device} sessions removed'
 
@@ -213,15 +213,15 @@ async def remove_session(
                 return common_response(result['code'], result['message'])
 
             db_user.logged_in_mobile = 0
-            db_user.total_logged_in = max(db_user.logged_in, 0)   
+            db_user.total_logged_in = max(db_user.logged_in_web, 0)   
             message = f'All {device} session removed' 
 
         else:
             if device.lower() == UserDevices.MOBILE.value.lower():
                 db_user.logged_in_mobile -= 1
             else:
-                db_user.logged_in -= 1
-            db_user.total_logged_in = db_user.logged_in + db_user.logged_in_mobile
+                db_user.logged_in_web -= 1
+            db_user.total_logged_in = db_user.logged_in_web + db_user.logged_in_mobile
         otadb.commit()
         return common_response(status.HTTP_200_OK, message)
     except Exception as e:
@@ -399,7 +399,7 @@ async def reset_forgot_password(
         if not otp_functions.check_verified_otp_validity(user.id):
             return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, SESSION_EXPIRED)
 
-        user.password = generate_password_hash(request.password)
+        user.password = hash_password(request.password)
 
         change_password_log = ChangePasswordLogs(username=user.username, password=user.password, changed_by=user.username)
         otadb.add(change_password_log)
@@ -407,7 +407,7 @@ async def reset_forgot_password(
         remove_tokens(username=user.username, device='all')
 
         user.first_login = False
-        user.logged_in = 0
+        user.logged_in_web = 0
         user.logged_in_mobile = 0
         user.total_logged_in = 0
         
@@ -536,11 +536,9 @@ async def reset_forgot_password(
 #             email_status='Verified',
 #             phone_status='Verified',
 #             account_status='active',
-#             premium=False,
 #             parking_enabled=False,
-#             is_bulk_order=False,
 #             password=generate_password_hash(password=password),
-#             max_login=1,
+#             max_login_web=1,
 #             max_login_mobile=1,
 #             logged_in=0,
 #             logged_in_mobile=0,

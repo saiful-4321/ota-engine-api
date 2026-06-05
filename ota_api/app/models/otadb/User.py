@@ -1,4 +1,4 @@
-# models.User.py
+import uuid
 from sqlalchemy import * 
 from sqlalchemy.sql import expression
 from databases.database import OtaDbBase
@@ -6,20 +6,16 @@ from enum import Enum
 
 class UserRoleEnum(Enum):
     ADMINISTRATOR = 'administrator'
-    BROKERADMIN = 'brokeradmin'
-    BROKEREXEC = 'brokerexec'
-    BROKERTRADER = 'brokertrader'
-    BROKERCCD = 'brokerccd'
-    BROKERIT = 'brokerit'
+    ADMIN = 'admin'
+    EXEC = 'exec'
+    IT = 'it'
     ASSOCIATE = 'associate'
     CLIENT = 'client'
 class UserRoleNameEnum(Enum):
     ADMINISTRATOR = 'System Admin'
-    BROKERADMIN = 'Super Admin'
-    BROKEREXEC = 'Executive'
-    BROKERTRADER = 'Dealer'
-    BROKERCCD = 'CCD'
-    BROKERIT = 'IT'
+    ADMIN = 'Super Admin'
+    EXEC = 'Executive'
+    IT = 'IT'
     ASSOCIATE = 'Associate'
     CLIENT = 'Client'
 
@@ -27,6 +23,7 @@ class User(OtaDbBase):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True)
+    uuid = Column(String(36), default=lambda: str(uuid.uuid4()), unique=True, index=True)
     username = Column(String, index=True)
     password = Column(String, index=True)
     email = Column(String, unique=True, index=True)
@@ -39,17 +36,12 @@ class User(OtaDbBase):
     phone_status = Column(String)
     phone = Column(String)
     account_status = Column(String)
-    exchange = Column(String)
-    max_login = Column(Integer, default=0, nullable=False)
-    logged_in = Column(Integer, default=0, nullable=False)
+    max_login_web = Column(Integer, default=0, nullable=False)
+    logged_in_web = Column(Integer, default=0, nullable=False)
     last_login = Column(String)
     login_ip = Column(String)
-    premium = Column(Boolean)  
     first_login = Column(Boolean)  
     parking_enabled = Column(Boolean)  
-    is_bulk_order = Column(Boolean)  
-    premium_start_date = Column(String)
-    premium_end_date = Column(String)
     max_login_mobile = Column(Integer, default=0, nullable=False)
     logged_in_mobile = Column(Integer, default=0, nullable=False)
     total_max_login = Column(Integer, default=0, nullable=False)

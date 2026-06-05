@@ -1,4 +1,4 @@
-# models.User.py
+import uuid
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, text
 from sqlalchemy.orm import relationship
 from databases.database import OtaDbBase
@@ -8,6 +8,7 @@ class NotificationPanel(OtaDbBase):
     __tablename__ = "notification_panel"
 
     id = Column(Integer, primary_key=True)
+    uuid = Column(String(36), default=lambda: str(uuid.uuid4()), unique=True, index=True)
     sender = Column(String)
     receiver = Column(String)
     title = Column(String)
@@ -19,6 +20,7 @@ class NotificationPanel(OtaDbBase):
     def to_dict(self):
         return {
             'id': self.id,
+            'uuid': self.uuid,
             'sender': self.sender,
             'receiver': self.receiver,
             'title': self.title,

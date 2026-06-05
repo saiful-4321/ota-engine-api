@@ -7,7 +7,7 @@ class BookingSegment(OtaDbBase):
     __tablename__ = "booking_segments"
 
     id                  = Column(BigInteger, primary_key=True, autoincrement=True)
-    booking_id          = Column(String(36), ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id          = Column(BigInteger, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
     segment_number      = Column(Integer, nullable=False)
     airline_code        = Column(String(2), nullable=False, index=True)
     flight_number       = Column(String(10), nullable=False)

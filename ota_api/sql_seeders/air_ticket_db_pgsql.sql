@@ -34,6 +34,7 @@ CREATE TYPE ticket_status_enum AS ENUM (
 -- ============Suppliers============ --
 CREATE TABLE IF NOT EXISTS suppliers (
     id          BIGSERIAL       PRIMARY KEY,
+    uuid        UUID            NOT NULL UNIQUE DEFAULT gen_random_uuid(),
     name        VARCHAR(100)    NOT NULL UNIQUE,
     code        VARCHAR(20)     NOT NULL UNIQUE,  -- 'sabre', 'amadeus', etc.
     description VARCHAR(255),
@@ -82,40 +83,24 @@ CREATE INDEX idx_fsrl_status      ON flight_search_requests_log(status);
 
 #============Bookings============#
 CREATE TABLE bookings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
+    id BIGSERIAL PRIMARY KEY,
+    uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
     booking_reference VARCHAR(20) UNIQUE NOT NULL,
-
     user_id UUID NOT NULL,
-
     supplier_id BIGINT REFERENCES suppliers(id),
-
     booking_status booking_status_enum NOT NULL DEFAULT 'PENDING',
-
     payment_status payment_status_enum NOT NULL DEFAULT 'PENDING',
-
     pnr VARCHAR(20),
-
     supplier_booking_id VARCHAR(100),
-
     currency VARCHAR(3) NOT NULL,
-
     base_fare NUMERIC(12,2) NOT NULL DEFAULT 0,
-
     tax_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
-
     service_fee NUMERIC(12,2) NOT NULL DEFAULT 0,
-
     discount_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
-
     total_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
-
-    booking_expiry TIMESTAMP,
-
+    booking_expiry TIMESTAMP DEFAULT '1970-01-01 00:00:00',
     issued_at TIMESTAMP,
-
     created_at TIMESTAMP DEFAULT NOW(),
-
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -142,7 +127,7 @@ ON bookings(pnr);
 CREATE TABLE booking_segments (
     id BIGSERIAL PRIMARY KEY,
 
-    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    booking_id BIGINT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
 
     segment_number INTEGER NOT NULL,
 
@@ -186,9 +171,9 @@ ON booking_segments(airline_code);
 
 #============Booking Passengers============#
 CREATE TABLE booking_passengers (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    id BIGSERIAL PRIMARY KEY,
+    uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+    booking_id BIGINT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
 
     passenger_type passenger_type_enum NOT NULL,
 
@@ -231,22 +216,17 @@ ON booking_passengers(last_name, first_name);
 
 #============Booking Tickets============#
 CREATE TABLE tickets (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
-
-    passenger_id UUID NOT NULL REFERENCES booking_passengers(id),
-
+    id BIGSERIAL PRIMARY KEY,
+    uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+    booking_id BIGINT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    passenger_id BIGINT NOT NULL REFERENCES booking_passengers(id),
     ticket_number VARCHAR(20) UNIQUE NOT NULL,
-
+    pnr VARCHAR(20),
+    fare_basis VARCHAR(50),
     ticket_status ticket_status_enum NOT NULL DEFAULT 'ISSUED',
-
     validating_carrier VARCHAR(2),
-
     supplier_ticket_id VARCHAR(100),
-
     issue_date TIMESTAMP DEFAULT NOW(),
-
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -262,9 +242,9 @@ ON tickets(passenger_id);
 
 #============Booking Payments============#
 CREATE TABLE payments (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    booking_id UUID NOT NULL REFERENCES bookings(id),
+    id BIGSERIAL PRIMARY KEY,
+    uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+    booking_id BIGINT NOT NULL REFERENCES bookings(id),
 
     payment_gateway VARCHAR(50),
 
@@ -296,11 +276,10 @@ ON payments(created_at DESC);
 
 #============Booking Refunds============#
 CREATE TABLE refunds (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-
-    booking_id UUID NOT NULL REFERENCES bookings(id),
-
-    ticket_id UUID NOT NULL REFERENCES tickets(id),
+    id BIGSERIAL PRIMARY KEY,
+    uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
+    booking_id BIGINT NOT NULL REFERENCES bookings(id),
+    ticket_id BIGINT NOT NULL REFERENCES tickets(id),
 
     refund_status VARCHAR(50),
 
@@ -326,7 +305,7 @@ ON refunds(ticket_id);
 CREATE TABLE booking_status_history (
     id BIGSERIAL PRIMARY KEY,
 
-    booking_id UUID NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    booking_id BIGINT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
 
     old_status booking_status_enum,
 

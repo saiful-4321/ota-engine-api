@@ -2,7 +2,7 @@ from jose import JWTError, jwt
 from sqlalchemy import func
 from app.helpers.common import *
 from datetime import datetime, timedelta
-from werkzeug.security import check_password_hash
+from app.helpers.password_utils import verify_password, hash_password
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from app.models.otadb.User import User as UserModel, UserRoleEnum
@@ -154,8 +154,10 @@ def authenticate_user(username: str, password: str, user: UserModel | None = Non
         allowed_roles = {
             UserRoleEnum.CLIENT.value,
             UserRoleEnum.ASSOCIATE.value,
-            UserRoleEnum.BROKERADMIN.value,
-            UserRoleEnum.ADMINISTRATOR.value
+            UserRoleEnum.ADMIN.value,
+            UserRoleEnum.ADMINISTRATOR.value,
+            UserRoleEnum.IT.value,
+            UserRoleEnum.EXEC.value,
         }
 
         if user.users_roles not in allowed_roles:
@@ -164,7 +166,7 @@ def authenticate_user(username: str, password: str, user: UserModel | None = Non
                 "message": f"Access denied: '{user.users_roles}' type user is not allowed."
             }
 
-        if not check_password_hash(user.password, password):
+        if not verify_password(password, user.password):
             return {"status": 401, "message": INCORRECT_PASSWORD}
 
         return {"status": 200, "message": SUCCESS, "user": user}
@@ -279,17 +281,17 @@ def handle_login_limit(user: UserModel, request: Request = Depends(), activity=N
         if device_type == UserDevices.MOBILE.value.lower():
             user.logged_in_mobile = (user.logged_in_mobile or 0) + 1
         else:
-            user.logged_in = (user.logged_in or 0) + 1
-        user.total_logged_in = user.logged_in + user.logged_in_mobile
+            user.logged_in_web = (user.logged_in_web or 0) + 1
+        user.total_logged_in = user.logged_in_web + user.logged_in_mobile
 
         if (user.total_max_login or 0) <= 0:
             return {'status': False, 'code': 403, 'message': YOU_ARE_NOT_ALLOWED_TO_LOGIN_ANY_DEVICE}
         if activity['device'].lower() == UserDevices.MOBILE.value.lower() and (user.max_login_mobile or 0) <= 0:
             return {'status': False, 'code': 403, 'message': YOU_ARE_NOT_ALLOWED_TO_LOGIN_ANY_MOBILE_DEVICE}
-        if activity['device'].lower() == UserDevices.DESKTOP.value.lower() and (user.max_login or 0) <= 0:
+        if activity['device'].lower() == UserDevices.DESKTOP.value.lower() and (user.max_login_web or 0) <= 0:
             return {'status': False, 'code': 403, 'message': YOU_ARE_NOT_ALLOWED_TO_LOGIN_ANY_DESKTOP_DEVICE}
 
-        exceeded_web = user.logged_in > user.max_login
+        exceeded_web = user.logged_in_web > user.max_login_web
         exceeded_mobile = user.logged_in_mobile > user.max_login_mobile
         exceeded_total = user.total_logged_in > user.total_max_login
 
@@ -300,13 +302,13 @@ def handle_login_limit(user: UserModel, request: Request = Depends(), activity=N
                     user,
                     remarks=MAX_ALLOWED_LOGIN_EXTENDED_FOR_MOBILE if activity['device'].lower() == UserDevices.MOBILE.value.lower() else MAX_ALLOWED_LOGIN_EXTENDED,
                     activity=activity,
-                    conn_number=user.logged_in_mobile if activity['device'].lower() == UserDevices.MOBILE.value.lower() else user.logged_in
+                    conn_number=user.logged_in_mobile if activity['device'].lower() == UserDevices.MOBILE.value.lower() else user.logged_in_web
                 )
                 if device_type == UserDevices.MOBILE.value.lower():
                     user.logged_in_mobile = (user.logged_in_mobile or 0) - 1
                 else:
-                    user.logged_in = (user.logged_in or 0) - 1
-                user.total_logged_in = user.logged_in + user.logged_in_mobile
+                    user.logged_in_web = (user.logged_in_web or 0) - 1
+                user.total_logged_in = user.logged_in_web + user.logged_in_mobile
                 otadb.commit()
                 return {'status': False, 'code': 409, 'message': ACTIVE_SESSION_EXISTS}
             else:
@@ -314,7 +316,7 @@ def handle_login_limit(user: UserModel, request: Request = Depends(), activity=N
                     user,
                     remarks=MAX_ALLOWED_LOGIN_EXTENDED_FOR_MOBILE if activity['device'].lower() == UserDevices.MOBILE.value.lower() else MAX_ALLOWED_LOGIN_EXTENDED,
                     activity=activity,
-                    conn_number=user.logged_in_mobile if activity['device'].lower() == UserDevices.MOBILE.value.lower() else user.logged_in
+                    conn_number=user.logged_in_mobile if activity['device'].lower() == UserDevices.MOBILE.value.lower() else user.logged_in_web
                 )
                 if exceeded_total:
                     result = remove_tokens(
@@ -325,10 +327,10 @@ def handle_login_limit(user: UserModel, request: Request = Depends(), activity=N
                         return {'status': False, 'code': result['code'], 'message': result['message']}
                     if device_type == UserDevices.MOBILE.value.lower():
                         user.logged_in_mobile = (user.logged_in_mobile or 0) - 1
-                        user.logged_in = 0
+                        user.logged_in_web = 0
                     else:
                         user.logged_in_mobile = 0
-                        user.logged_in = (user.logged_in or 0) - 1
+                        user.logged_in_web = (user.logged_in_web or 0) - 1
                     user.total_logged_in = 1 
                 elif exceeded_mobile:
                     result = remove_tokens(
@@ -339,7 +341,7 @@ def handle_login_limit(user: UserModel, request: Request = Depends(), activity=N
                         return {'status': False, 'code': result['code'], 'message': result['message']}
                     
                     user.logged_in_mobile = (user.logged_in_mobile or 0) - 1 
-                    user.total_logged_in = user.logged_in_mobile + user.logged_in
+                    user.total_logged_in = user.logged_in_mobile + user.logged_in_web
                     
                 elif exceeded_web:
                     result = remove_tokens(
@@ -349,15 +351,15 @@ def handle_login_limit(user: UserModel, request: Request = Depends(), activity=N
                     if not result['status']:
                         return {'status': False, 'code': result['code'], 'message': result['message']}
                     
-                    user.logged_in = (user.logged_in or 0) - 1
-                    user.total_logged_in = user.logged_in_mobile + user.logged_in
+                    user.logged_in_web = (user.logged_in_web or 0) - 1
+                    user.total_logged_in = user.logged_in_mobile + user.logged_in_web
 
         otadb.commit()
         login_activity(
             user,
             remarks="Login",
             activity=activity,
-            conn_number=user.logged_in_mobile if activity['device'].lower() == 'mobile' else user.logged_in
+            conn_number=user.logged_in_mobile if activity['device'].lower() == 'mobile' else user.logged_in_web
         )
         return {'status': True, 'code': 200, 'message': SUCCESS}
     except Exception as e:

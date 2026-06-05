@@ -7,7 +7,7 @@ class BookingStatusHistory(OtaDbBase):
     __tablename__ = "booking_status_history"
 
     id          = Column(BigInteger, primary_key=True, autoincrement=True)
-    booking_id  = Column(String(36), ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
+    booking_id  = Column(BigInteger, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True)
     
     old_status  = Column(Enum(
                     'PENDING',
