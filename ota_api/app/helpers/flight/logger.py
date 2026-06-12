@@ -1,6 +1,8 @@
 import uuid
 import datetime
+from decimal import Decimal
 from typing import Optional, Dict, Any
+from sqlalchemy import text
 
 from app.models.sabre_schemas import FlightSearchRequest, FlightBookingRequest, TicketingRequest
 from app.models.otadb.SearchRequest import SearchRequest
@@ -14,6 +16,7 @@ from app.models.otadb.Payment import Payment
 from app.models.otadb.Refund import Refund
 from app.models.otadb.BookingStatusHistory import BookingStatusHistory
 from app.helpers.common import get_ota_db_session, write_log
+from app.utils.currency import convert_to_bdt, normalize_rate, DEFAULT_CURRENCY
 
 
 def log_search_request(
@@ -95,31 +98,145 @@ def log_booking(
 
         # 2. Extract PNR from Sabre Response
         # Note: Response structure varies by supplier. This assumes Sabre format.
-        itinerary_ref = response.get("CreatePassengerNameRecordRS", {}).get("ItineraryRef", {})
-        pnr = itinerary_ref.get("ID") or response.get("pnr") or response.get("id")
+        def _find_pnr(res: Any) -> Optional[str]:
+            if not res:
+                return None
+            if isinstance(res, str):
+                if len(res) == 6 and res.isalnum() and res.isupper():
+                    return res
+                return None
+            if isinstance(res, dict):
+                # Priority keys
+                for key in ["ID", "pnr", "id", "bookingId", "confirmationId", "RecordLocator"]:
+                    val = res.get(key)
+                    if val and isinstance(val, str) and len(val) == 6 and val.isalnum() and val.isupper():
+                        return val
+                # Recurse
+                for v in res.values():
+                    found = _find_pnr(v)
+                    if found:
+                        return found
+            elif isinstance(res, list):
+                for item in res:
+                    found = _find_pnr(item)
+                    if found:
+                        return found
+            return None
+
+        pnr = _find_pnr(response)
 
         if not pnr:
-            write_log("Could not find PNR in response", source="flight.logger.log_booking", type="warning")
+            write_log(f"Could not find PNR in response: {response}", source="flight.logger.log_booking", type="warning")
             return
 
-        # 3. Extract Price Info
+        # 3. Extract Price Info & Currency Context
         pi = request.price_info
-        total_amount    = pi.get("total_fare") or pi.get("totalFare") or pi.get("total_amount") or 0
-        base_fare       = pi.get("base_fare") or pi.get("baseFare") or 0
-        tax_amount      = pi.get("tax_amount") or pi.get("taxAmount") or pi.get("taxes") or 0
-        service_fee     = pi.get("service_fee") or pi.get("serviceFee") or 0
-        discount_amount = pi.get("discount_amount") or pi.get("discountAmount") or 0
+
+        # Log the raw price_info for debugging (helps trace key mismatches)
+        write_log(
+            f"[log_booking] price_info received: {pi}",
+            source="flight.logger.log_booking", type="info"
+        )
+
+        # The currency the client searched / priced in (e.g. 'USD', 'SGD', 'BDT')
+        search_currency = (pi.get("currency") or "BDT").upper()
+
+        # Fetch conversion rate directly from the 'currencies' table in the DB
+        # The frontend no longer needs to pass conversion_rate_to_bdt
+        conversion_rate_value = 1.0
+        if search_currency != "BDT":
+            try:
+                result = db.execute(
+                    text("SELECT exchange_rate FROM currencies WHERE code = :code AND status = 'Active'"),
+                    {"code": search_currency}
+                ).fetchone()
+                if result and result[0]:
+                    conversion_rate_value = float(result[0])
+            except Exception as e:
+                write_log(f"Failed to fetch exchange rate for {search_currency}: {e}", source="flight.logger.log_booking", type="warning")
+        
+        conversion_rate = normalize_rate(conversion_rate_value, search_currency)
+
+        # ── Amount extraction ───────────────────────────────────────────────
+        # Handles all key variants from:
+        #   • Search response  (format_bfm_response)  → baseFare, taxes, numericPrice
+        #   • Pricing response (format_pricing_response) → base, taxes, total
+        #   • Direct client    (manually built)        → base_fare, tax_amount, total_fare
+        # ────────────────────────────────────────────────────────────────────
+
+        # total
+        raw_total = (
+            pi.get("total_fare")
+            or pi.get("totalFare")
+            or pi.get("total_amount")
+            or pi.get("total_price") # <--- Ah! The frontend is sending this!
+            or pi.get("total")
+            or pi.get("numericPrice")
+            or 0
+        )
+        # base fare
+        raw_base = (
+            pi.get("base_fare")
+            or pi.get("baseFare")
+            or pi.get("base")
+            or pi.get("base_price")
+            or 0
+        )
+        # tax
+        raw_tax = (
+            pi.get("tax_amount")     # manual / legacy
+            or pi.get("taxAmount")
+            or pi.get("taxes")       # BFM search response & pricing response key
+            or 0
+        )
+        # service fee
+        raw_service = (
+            pi.get("service_fee")
+            or pi.get("serviceFee")
+            or 0
+        )
+        # discount
+        raw_discount = (
+            pi.get("discount_amount")
+            or pi.get("discountAmount")
+            or 0
+        )
+
+        # If we still have no total but have base+tax, derive it
+        if not raw_total and (raw_base or raw_tax):
+            raw_total = (float(raw_base or 0) + float(raw_tax or 0) + float(raw_service or 0))
+
+        # If the frontend only sent the total but no breakdown, attribute it to base fare
+        if raw_total and not raw_base and not raw_tax:
+            raw_base = raw_total
+
+        # Convert to BDT using the fetched conversion rate
+        total_amount    = convert_to_bdt(raw_total,    search_currency, conversion_rate)
+        base_fare       = convert_to_bdt(raw_base,     search_currency, conversion_rate)
+        tax_amount      = convert_to_bdt(raw_tax,      search_currency, conversion_rate)
+        service_fee     = convert_to_bdt(raw_service,  search_currency, conversion_rate)
+        discount_amount = convert_to_bdt(raw_discount, search_currency, conversion_rate)
+
+        # Log exactly what amounts are going into the DB for verification
+        write_log(
+            f"[log_booking] Amounts to DB -> total: {total_amount} BDT, base: {base_fare} BDT (from {search_currency} raw: {raw_total} @ {conversion_rate})",
+            source="flight.logger.log_booking", type="info"
+        )
         
         # 4. Create Booking Header
         booking = Booking(
             booking_reference = f"SN{uuid.uuid4().hex[:8].upper()}",
-            user_id           = user_id or "0", 
+            user_id           = user_id or "0",
             supplier_id       = supplier_id,
             booking_status    = 'CONFIRMED',
             payment_status    = 'PENDING',
             pnr               = pnr,
             supplier_booking_id = pnr,
-            currency          = pi.get("currency", "BDT"),
+            # Stored currency is always BDT
+            currency          = DEFAULT_CURRENCY,
+            search_currency   = search_currency,
+            conversion_rate   = conversion_rate,
+            # All amounts in BDT
             base_fare         = base_fare,
             tax_amount        = tax_amount,
             service_fee       = service_fee,
@@ -150,9 +267,21 @@ def log_booking(
 
         # 5. Create Passengers
         for pax in request.passengers:
+            ptype = (pax.passenger_type or "ADT").upper().strip()
+            if ptype in ["CNN", "CHILD"]:
+                ptype = "CHD"
+            elif ptype in ["ADULT"]:
+                ptype = "ADT"
+            elif ptype in ["INFANT"]:
+                ptype = "INF"
+            
+            # Keep only ADT, CHD, INF to match passenger_type_enum values
+            if ptype not in ["ADT", "CHD", "INF"]:
+                ptype = "ADT"
+
             passenger = BookingPassenger(
                 booking_id     = booking.id,
-                passenger_type = pax.passenger_type,
+                passenger_type = ptype,
                 title          = None,
                 first_name     = pax.first_name,
                 last_name      = pax.last_name,
@@ -223,20 +352,27 @@ def log_ticket(
         for t_data in tickets_data:
             ticket_number = t_data.get("TicketNumber")
             pax_name = t_data.get("PassengerName", "") # To link to passenger
-            
+
             # Simple heuristic to link to passenger by name if possible
             # In a real system, we should have more robust linking
             passenger = db.query(BookingPassenger).filter(
                 BookingPassenger.booking_id == booking.id
             ).first() # Just take first for now if we can't link
 
+            # Inherit currency context from parent booking record
             ticket = Ticket(
-                booking_id     = booking.id,
-                passenger_id   = passenger.id if passenger else None,
-                ticket_number  = ticket_number,
-                ticket_status  = 'ISSUED',
+                booking_id      = booking.id,
+                passenger_id    = passenger.id if passenger else None,
+                ticket_number   = ticket_number,
+                ticket_status   = 'ISSUED',
                 validating_carrier = request.validating_carrier,
-                issue_date     = datetime.datetime.utcnow(),
+                issue_date      = datetime.datetime.utcnow(),
+                # All amounts in BDT — inherit rate context from booking
+                search_currency = booking.search_currency or DEFAULT_CURRENCY,
+                conversion_rate = booking.conversion_rate or Decimal("1.000000"),
+                total_amount    = booking.total_amount,
+                base_fare       = booking.base_fare,
+                tax_amount      = booking.tax_amount,
             )
             db.add(ticket)
         

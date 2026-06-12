@@ -25,6 +25,26 @@ class BookingPassenger(OtaDbBase):
     email                   = Column(String(255), nullable=True)
     phone                   = Column(String(50), nullable=True)
     created_at              = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
+    updated_at              = Column(TIMESTAMP, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at              = Column(TIMESTAMP, nullable=True)
+
+    # Laravel-specific fields
+    traveller_id            = Column(BigInteger, nullable=True, index=True)
+    is_lead                 = Column(Integer, default=0, nullable=True)  # maps to boolean
+    type                    = Column(String(255), nullable=True)
+    linked_passenger_id     = Column(BigInteger, nullable=True, index=True)
+    passport_issuing_country = Column(String(2), nullable=True)
+    frequent_flyer_airline  = Column(String(255), nullable=True)
+    dob                     = Column(Date, nullable=True)
+
+    # Dynamic alias property
+    @property
+    def flight_booking_id(self):
+        return self.booking_id
+
+    @flight_booking_id.setter
+    def flight_booking_id(self, value):
+        self.booking_id = value
 
     # Relationships
     booking = relationship("Booking", back_populates="passengers")

@@ -21,6 +21,32 @@ class BookingSegment(OtaDbBase):
     fare_basis          = Column(String(50), nullable=True)
     segment_status      = Column(String(50), nullable=True)
     created_at          = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
+    updated_at          = Column(TIMESTAMP, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Laravel-specific fields
+    segment_order       = Column(Integer, default=1, nullable=True)
+    marketing_carrier   = Column(String(3), nullable=True)
+    operating_carrier   = Column(String(3), nullable=True)
+    departure_airport   = Column(String(3), nullable=True)
+    arrival_airport     = Column(String(3), nullable=True)
+    terminal_departure  = Column(String(255), nullable=True)
+    terminal_arrival    = Column(String(255), nullable=True)
+    departure_time      = Column(TIMESTAMP, nullable=True)
+    arrival_time        = Column(TIMESTAMP, nullable=True)
+    duration            = Column(String(255), nullable=True)
+    status              = Column(String(2), nullable=True)
+    stop_quantity       = Column(Integer, default=0, nullable=True)
+    baggage_allowance   = Column(String(255), nullable=True)
+    aircraft_code       = Column(String(255), nullable=True)
+
+    # Dynamic alias property
+    @property
+    def flight_booking_id(self):
+        return self.booking_id
+
+    @flight_booking_id.setter
+    def flight_booking_id(self, value):
+        self.booking_id = value
 
     # Relationships
     booking = relationship("Booking", back_populates="segments")

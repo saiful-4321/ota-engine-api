@@ -46,7 +46,16 @@ class BookingPassenger(BaseModel):
 class FlightBookingRequest(BaseModel):
     flight_segments: List[Dict[str, Any]] = Field(..., description="Flight segments to book")
     passengers: List[BookingPassenger] = Field(..., description="Passenger details for the booking")
-    price_info: Dict[str, Any] = Field(..., description="Pricing information verified previously")
+    price_info: Dict[str, Any] = Field(
+        ...,
+        description=(
+            "Pricing information verified previously. "
+            "Expected keys: total_fare, base_fare, tax_amount, service_fee, discount_amount, currency. "
+            "For non-BDT currencies, also supply `conversion_rate_to_bdt` (float) — "
+            "e.g. if currency='USD' and 1 USD = 110.50 BDT, set conversion_rate_to_bdt=110.50. "
+            "All amounts are stored in BDT internally; the original currency and rate are preserved for audit."
+        )
+    )
     validating_carrier: Optional[str] = Field(None, description="Optional airline code to use as validating carrier for pricing")
 
 class TicketingRequest(BaseModel):
