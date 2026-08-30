@@ -106,6 +106,7 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
         grouped = sabre_response["groupedItineraryResponse"]
         leg_descs      = {l["id"]: l for l in grouped.get("legDescs", [])}
         schedule_descs = {s["id"]: s for s in grouped.get("scheduleDescs", [])}
+        tax_summary_descs = {t["id"]: t for t in grouped.get("taxSummaryDescs", [])}
         
         # Extract airline names from airlineDescs if present
         airline_descs = {}
@@ -139,6 +140,20 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                     total_price_num = total_fare.get("totalPrice", 0) or 0
                     base_fare       = fare.get("baseFareAmount", 0) or 0
                     taxes           = fare.get("totalTaxAmount", 0) or 0
+                    
+                    tax_summaries = fare.get("taxSummaries", [])
+                    if tax_summaries:
+                        tax_breakdown = []
+                        for ts in tax_summaries:
+                            ref = ts.get("ref")
+                            if ref and ref in tax_summary_descs:
+                                tax_breakdown.append({
+                                    "code": tax_summary_descs[ref].get("code", "TAX"),
+                                    "amount": tax_summary_descs[ref].get("amount", 0)
+                                })
+                        if tax_breakdown:
+                            taxes = tax_breakdown
+
                     currency        = total_fare.get("currency", "BDT")
                     validating_carrier = fare.get("validatingCarrierCode", "")
 
@@ -151,19 +166,17 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                         fare_components = p_info.get("fareComponents", [])
                         baggage_info    = p_info.get("baggageInformation", [])
 
-                segment_details: Dict[int, Dict] = {}
+                fare_segments = []
                 for fc in fare_components:
                     for seg in fc.get("segments", []):
                         s = seg.get("segment", {})
-                        sid = s.get("id")
-                        if sid is not None:
-                            segment_details[sid] = {
-                                "cabin_code":      s.get("cabinCode"),
-                                "seats_remaining": s.get("seatsAvailable"),
-                                "booking_code":    s.get("resBookDesigCode"),
-                            }
-                            if seats_remaining is None:
-                                seats_remaining = s.get("seatsAvailable")
+                        fare_segments.append({
+                            "cabin_code":      s.get("cabinCode"),
+                            "seats_remaining": s.get("seatsAvailable"),
+                            "booking_code":    s.get("bookingCode") or s.get("resBookDesigCode"),
+                        })
+                        if seats_remaining is None:
+                            seats_remaining = s.get("seatsAvailable")
 
                 if baggage_info:
                     allowance = baggage_info[0].get("allowance", {})
@@ -182,13 +195,18 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                 last_arr   = {}
                 top_airline_code = validating_carrier
                 top_airline_name = _get_airline_name(top_airline_code, airline_descs, {})
-                top_airline_logo = f"https://images.daisycon.io/airline/{top_airline_code}.png" if top_airline_code else ""
+                top_airline_logo = f"https://pics.avs.io/al_sha/100/100/{top_airline_code}.png" if top_airline_code else ""
 
+                global_seg_idx = 0
                 for leg_idx, itin_leg in enumerate(itin.get("legs", [])):
+                    leg_dep_date = ""
+                    group_leg_descs = group.get("groupDescription", {}).get("legDescriptions", [])
+                    if leg_idx < len(group_leg_descs):
+                        leg_dep_date = group_leg_descs[leg_idx].get("departureDate", "")
+
                     leg_ref     = itin_leg.get("ref", 0)
                     leg_details = leg_descs.get(leg_ref, {})
                     schedules   = leg_details.get("schedules", [])
-
                     elapsed = leg_details.get("elapsedTime")
                     duration_str = _minutes_to_duration(elapsed)
 
@@ -203,12 +221,26 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                         departure     = sched_details.get("departure", {})
                         arrival       = sched_details.get("arrival", {})
                         carrier       = sched_details.get("carrier", {})
-                        seg_info      = segment_details.get(sched_ref, {})
+                        
+                        seg_info = {}
+                        if global_seg_idx < len(fare_segments):
+                            seg_info = fare_segments[global_seg_idx]
+                        global_seg_idx += 1
+
+                        dep_adj = sched.get("departureDateAdjustment", 0)
+                        seg_dep_date = leg_dep_date
+                        if dep_adj and leg_dep_date:
+                            try:
+                                base_dt = datetime.datetime.strptime(leg_dep_date, "%Y-%m-%d")
+                                seg_dep_date = (base_dt + datetime.timedelta(days=dep_adj)).date().isoformat()
+                            except Exception:
+                                pass
 
                         if idx == 0:
-                            first_dep_date_in_leg = departure.get("date")
+                            first_dep_date_in_leg = seg_dep_date
                             if leg_idx == 0:
                                 first_dep = {
+                                    "date":     seg_dep_date,
                                     "time":     departure.get("time", "")[:5],
                                     "code":     departure.get("airport", ""),
                                     "city":     departure.get("city", ""),
@@ -218,7 +250,7 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                                 mktg = carrier.get("marketing", "")
                                 top_airline_code = mktg or validating_carrier
                                 top_airline_name = _get_airline_name(top_airline_code, airline_descs, carrier)
-                                top_airline_logo = f"https://images.daisycon.io/airline/{top_airline_code}.png"
+                                top_airline_logo = f"https://pics.avs.io/al_sha/100/100/{top_airline_code}.png"
 
                         if idx > 0:
                             stop_code = departure.get("airport", "")
@@ -226,11 +258,48 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                                 leg_stops.append(stop_code)
                                 all_stops.append(stop_code)
 
+                        # Determine segment arrival date using timezone math
+                        seg_arr_date = seg_dep_date
+                        elapsed_mins = sched_details.get("elapsedTime", 0)
+                        dep_time_full = departure.get("time", "")
+                        arr_time_full = arrival.get("time", "")
+                        if seg_dep_date and dep_time_full and arr_time_full:
+                            try:
+                                # Parse departure datetime (supporting isoformat with timezone)
+                                dep_iso = f"{seg_dep_date}T{dep_time_full}"
+                                dep_dt = datetime.datetime.fromisoformat(dep_iso)
+                                arr_dt = dep_dt + datetime.timedelta(minutes=elapsed_mins)
+                                
+                                # Convert to arrival timezone
+                                tz_part = None
+                                sign = None
+                                if "+" in arr_time_full:
+                                    tz_part = arr_time_full.split("+")[1]
+                                    sign = "+"
+                                elif "-" in arr_time_full:
+                                    parts = arr_time_full.split("-")
+                                    if len(parts) > 1 and ":" in parts[-1]:
+                                        tz_part = parts[-1]
+                                        sign = "-"
+                                
+                                if tz_part:
+                                    tz_hours, tz_mins = map(int, tz_part.split(":"))
+                                    offset = datetime.timedelta(hours=tz_hours, minutes=tz_mins)
+                                    if sign == "-":
+                                        offset = -offset
+                                    tz = datetime.timezone(offset)
+                                    arr_dt_in_tz = arr_dt.astimezone(tz)
+                                    seg_arr_date = arr_dt_in_tz.date().isoformat()
+                                else:
+                                    seg_arr_date = arr_dt.date().isoformat()
+                            except Exception:
+                                pass
+
                         day_offset = 0
-                        if first_dep_date_in_leg and arrival.get("date"):
+                        if first_dep_date_in_leg and seg_arr_date:
                             try:
                                 d1 = datetime.datetime.strptime(first_dep_date_in_leg, "%Y-%m-%d").date()
-                                d2 = datetime.datetime.strptime(arrival["date"], "%Y-%m-%d").date()
+                                d2 = datetime.datetime.strptime(seg_arr_date, "%Y-%m-%d").date()
                                 day_offset = (d2 - d1).days
                             except Exception:
                                 pass
@@ -245,9 +314,10 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                                 "code":     mktg_code,
                                 "name":     mktg_name,
                                 "aircraft": aircraft,
-                                "logo":     f"https://images.daisycon.io/airline/{mktg_code}.png"
+                                "logo":     f"https://pics.avs.io/al_sha/100/100/{mktg_code}.png"
                             },
                             "departure": {
+                                "date":     seg_dep_date,
                                 "time":     departure.get("time", "")[:5],
                                 "code":     departure.get("airport", ""),
                                 "city":     departure.get("city", ""),
@@ -255,6 +325,7 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                                 "terminal": departure.get("terminal")
                             },
                             "arrival": {
+                                "date":          seg_arr_date,
                                 "time":          arrival.get("time", "")[:5],
                                 "code":          arrival.get("airport", ""),
                                 "city":          arrival.get("city", ""),
@@ -281,13 +352,23 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                             next_ref     = schedules[idx + 1].get("ref", 0)
                             next_details = schedule_descs.get(next_ref, {})
                             next_dep     = next_details.get("departure", {})
+                            
+                            next_dep_adj = schedules[idx + 1].get("departureDateAdjustment", 0)
+                            next_seg_dep_date = leg_dep_date
+                            if next_dep_adj and leg_dep_date:
+                                try:
+                                    base_dt = datetime.datetime.strptime(leg_dep_date, "%Y-%m-%d")
+                                    next_seg_dep_date = (base_dt + datetime.timedelta(days=next_dep_adj)).date().isoformat()
+                                except Exception:
+                                    pass
+
                             layover_str  = None
                             layover_mins = 0
                             try:
                                 arr_dt = datetime.datetime.strptime(
-                                    f"{arrival.get('date')} {arrival.get('time','')[:5]}", "%Y-%m-%d %H:%M")
+                                    f"{seg_arr_date} {arrival.get('time','')[:5]}", "%Y-%m-%d %H:%M")
                                 dep_dt = datetime.datetime.strptime(
-                                    f"{next_dep.get('date')} {next_dep.get('time','')[:5]}", "%Y-%m-%d %H:%M")
+                                    f"{next_seg_dep_date} {next_dep.get('time','')[:5]}", "%Y-%m-%d %H:%M")
                                 layover_mins = int((dep_dt - arr_dt).total_seconds() / 60)
                                 layover_str  = _minutes_to_duration(layover_mins)
                             except Exception:
@@ -301,6 +382,7 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
 
                         if leg_idx == 0:
                             last_arr = {
+                                "date":     seg_arr_date,
                                 "time":     arrival.get("time", "")[:5],
                                 "code":     arrival.get("airport", ""),
                                 "city":     arrival.get("city", ""),
@@ -444,12 +526,79 @@ def format_pnr_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
         }
     else:
         # Handle errors
+        error_details = []
+        
+        # 1. Try to find a specific cause in Warnings (Sabre often puts the real reason here)
+        warnings = results.get("Warning", [])
+        for warn in warnings:
+            for sys_res in warn.get("SystemSpecificResults", []):
+                for msg in sys_res.get("Message", []):
+                    content = msg.get("content") or msg.get("value")
+                    if content and content not in error_details:
+                        error_details.append(content)
+
+        # 2. Extract main Errors
         errors = results.get("Error", [])
-        error_msg = "Booking failed"
-        if errors:
-            msg_list = errors[0].get("SystemSpecificResults", [{}])[0].get("Message", [])
-            if msg_list:
-                error_msg = msg_list[0].get("value") or str(msg_list[0])
+        for err in errors:
+            for sys_res in err.get("SystemSpecificResults", []):
+                for msg in sys_res.get("Message", []):
+                    content = msg.get("content") or msg.get("value")
+                    if content and content not in error_details:
+                        error_details.append(content)
+
+        # 3. Clean and translate GDS messages to user-friendly text
+        cleaned_messages = []
+        for raw_msg in error_details:
+            cleaned = raw_msg
+            # Remove typical technical prefixes
+            for prefix in ["EnhancedAirBookRQ:", "EndTransactionLLSRQ:", "EnhancedEndTransactionRQ:", "WARN.SWS.HOST.ERROR_IN_RESPONSE", "WARN.SP.PROVIDER_ERROR"]:
+                if cleaned.startswith(prefix):
+                    cleaned = cleaned[len(prefix):].strip()
+                cleaned = cleaned.replace(prefix, "").strip()
+                
+            msg_upper = cleaned.upper()
+            
+            # Map raw codes/phrases to clear consumer-friendly messages
+            user_msg = None
+            if "FLIGHT NOOP FOR THIS FLIGHT/DATE" in msg_upper or "NOOP" in msg_upper:
+                user_msg = "The selected flight does not operate on this date. Please choose a different date or flight."
+            elif "CHECK FLIGHT NUMBER" in msg_upper:
+                user_msg = "The flight number is invalid or not available in the reservation system."
+            elif "ITINERARY REQUIRED TO COMPLETE TRANSACTION" in msg_upper:
+                user_msg = "Could not secure seat availability for this flight. It may be fully booked."
+            elif "PNR HAS NOT BEEN CREATED SUCCESSFULLY" in msg_upper:
+                user_msg = "The reservation could not be completed successfully."
+            
+            # Check for GDS-internal technical substrings to ignore
+            ignore = False
+            ignore_substrings = [
+                "FORMAT, CHECK SEGMENT NUMBER",
+                "UNABLE TO RECOVER FROM ENDTRANSACTIONLLSRQ ERROR",
+                "PLEASE SEE BELOW MESSAGES",
+                "UNABLE TO END THE TRANSACTION",
+                "SEE REMAINING MESSAGES FOR DETAILS",
+                "BUSINESS_ERROR",
+                "ERR.SP.BUSINESS_ERROR"
+            ]
+            for sub in ignore_substrings:
+                if sub in msg_upper:
+                    ignore = True
+                    break
+                    
+            if ignore:
+                continue
+                
+            final_msg = user_msg if user_msg else cleaned
+            if final_msg:
+                final_msg = final_msg.strip().rstrip(".")
+                if final_msg and final_msg not in cleaned_messages:
+                    cleaned_messages.append(final_msg)
+
+        error_msg = "AtBooking failed"
+        if cleaned_messages:
+            error_msg = f"{'. '.join(cleaned_messages)}."
+        elif error_details:
+            error_msg = f"{'; '.join(error_details)}"
 
         return {
             "status": "error",
@@ -485,7 +634,7 @@ def format_pnr_details_response(sabre_response: Dict[str, Any]) -> Dict[str, Any
             "airline": {
                 "code": flight.get("airlineCode"),
                 "name": flight.get("airlineName"),
-                "logo": f"https://images.daisycon.io/airline/{flight.get('airlineCode')}.png"
+                "logo": f"https://pics.avs.io/al_sha/100/100/{flight.get('airlineCode')}.png"
             },
             "operatingAirline": {
                 "code": flight.get("operatingAirlineCode"),
@@ -611,6 +760,35 @@ def format_ticketing_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 message = error_details[0]
 
+    # Extract ticket numbers from response
+    tickets_data = air_ticket_rs.get("Summary", [])
+    if not tickets_data:
+        tickets_data = air_ticket_rs.get("TicketDetails", [])
+    
+    ticket_numbers = []
+    if tickets_data:
+        for t_data in tickets_data:
+            if isinstance(t_data, dict):
+                num = t_data.get("TicketNumber") or t_data.get("DocumentNumber") or t_data.get("number")
+                if num:
+                    ticket_numbers.append(str(num))
+            elif isinstance(t_data, str):
+                ticket_numbers.append(t_data)
+    else:
+        # Fallback recursive search
+        def find_tickets(obj):
+            if isinstance(obj, dict):
+                if "TicketNumber" in obj:
+                    ticket_numbers.append(obj["TicketNumber"])
+                elif "DocumentNumber" in obj:
+                    ticket_numbers.append(obj["DocumentNumber"])
+                for v in obj.values():
+                    find_tickets(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    find_tickets(item)
+        find_tickets(sabre_response)
+
     return {
         "status": "success" if is_success else "error",
         "message": message,
@@ -618,7 +796,8 @@ def format_ticketing_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
             "status": rs_status or sabre_response.get("status"),
             "pnr": air_ticket_rs.get("Itinerary", {}).get("ID"),
             "errors": error_details,
-            "timestamp": app_results.get("Error", [{}])[0].get("timeStamp") if error_details else None
+            "timestamp": app_results.get("Error", [{}])[0].get("timeStamp") if error_details else None,
+            "ticket_numbers": list(filter(None, ticket_numbers))
         },
     }
 
@@ -651,9 +830,17 @@ def format_pricing_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
             fares = items[0].get("fares", [])
             if fares:
                 fare_total = fares[0].get("fareTotal", {})
+                
+                tax_breakdown = []
+                for tax in fare_total.get("taxes", []):
+                    tax_breakdown.append({
+                        "code": tax.get("taxCode", "TAX"),
+                        "amount": tax.get("amount", 0)
+                    })
+                
                 fare_details = {
                     "baseFare": fare_total.get("equivalentFare"),
-                    "taxAmount": fare_total.get("taxAmount"),
+                    "taxAmount": tax_breakdown if tax_breakdown else fare_total.get("taxAmount"),
                     "totalAmount": fare_total.get("amount"),
                     "currency": fare_total.get("currencyCode")
                 }

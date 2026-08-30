@@ -9,6 +9,7 @@ from app.models.sabre_schemas import (
     FlightSearchRequest, FlightPricingRequest, FlightBookingRequest, TicketingRequest,
     PNRDetailsRequest, CancelItineraryRequest, VoidTicketRequest, ExchangeTicketRequest,
     SeatMapRequest, BaggageAllowanceRequest, QueueRequest, FareRulesRequest,
+    RepricePNRRequest,
 )
 from app.helpers.flight import (
     DEFAULT_SUPPLIER, resolve_supplier, log_search_request,
@@ -131,7 +132,7 @@ async def price_flight(request: FlightPricingRequest, supplier: str = _S):
 
 
 # ===========================================================================
-# Booking (PNR)
+# AtBooking (PNR)
 # ===========================================================================
 
 @router.post("/book", summary="Create Booking (PNR)",
@@ -184,6 +185,33 @@ async def pnr_cancel(request: CancelItineraryRequest, supplier: str = _S):
         return JSONResponse(status_code=400, content=format_error_response(e))
 
 
+@router.post(
+    "/pnr/reprice",
+    summary="Reprice PNR",
+    description=(
+        "Regenerates the price quote on an existing PNR. "
+        "Call this when the original price quote has expired (Sabre error 1496). "
+        "Returns the fresh pricing for user confirmation before re-issuing."
+    )
+)
+async def pnr_reprice(request: RepricePNRRequest, supplier: str = _S):
+    try:
+        result = resolve_supplier(supplier).reprice_pnr(
+            pnr=request.pnr,
+            passenger_types=request.passenger_types,
+        )
+        return {
+            "status": "success",
+            "message": result.get("message", "PNR repriced successfully"),
+            "pricing": result.get("pricing", {}),
+        }
+    except ValueError as ve:
+        return JSONResponse(status_code=400, content=format_error_response(ve))
+    except Exception as e:
+        return JSONResponse(status_code=400, content=format_error_response(e))
+
+
+
 @router.post("/pnr/queue", summary="Place PNR on Queue",
              description="Places a PNR on a specific agency queue.")
 async def queue_place(request: QueueRequest, supplier: str = _S):
@@ -199,10 +227,11 @@ async def queue_place(request: QueueRequest, supplier: str = _S):
 # Ticketing
 # ===========================================================================
 
-@router.post("/ticket/issue", summary="Issue Ticket",
+@router.post("/ticket/issue", summary="Issue AtFlightTicket",
              description="Issues an electronic air ticket for a reservation (PNR).")
 async def ticket_issue(
     request: TicketingRequest,
+    http_request: Request,
     background_tasks: BackgroundTasks,
     supplier: str = _S
 ):
@@ -210,12 +239,14 @@ async def ticket_issue(
         response = resolve_supplier(supplier).issue_ticket(request)
         formatted = format_ticketing_response(supplier, response)
         
-        # Log ticket issuance
+        # Log ticket issuance as a background task to prevent blocking or failing the API response
+        # if the database transaction encounters an error after the supplier has already issued the ticket.
         background_tasks.add_task(
             log_ticket,
             request = request,
             response = response,
-            supplier_code = supplier
+            supplier_code = supplier,
+            user_id = get_optional_user_id(http_request)
         )
         
         return formatted
@@ -225,7 +256,7 @@ async def ticket_issue(
         return JSONResponse(status_code=400, content=format_error_response(e))
 
 
-@router.post("/ticket/void", summary="Void Ticket",
+@router.post("/ticket/void", summary="Void AtFlightTicket",
              description="Voids a previously issued electronic ticket (typically within 24 hours).")
 async def ticket_void(request: VoidTicketRequest, supplier: str = _S):
     try:
@@ -236,7 +267,7 @@ async def ticket_void(request: VoidTicketRequest, supplier: str = _S):
         return JSONResponse(status_code=400, content=format_error_response(e))
 
 
-@router.post("/ticket/exchange", summary="Exchange Ticket (Auto Reissue)",
+@router.post("/ticket/exchange", summary="Exchange AtFlightTicket (Auto Reissue)",
              description="Performs an automated exchange / reissue of an existing ticket.")
 async def ticket_exchange(request: ExchangeTicketRequest, supplier: str = _S):
     try:

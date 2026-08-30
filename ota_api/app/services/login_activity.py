@@ -2,6 +2,16 @@
 from app.helpers.common import *
 from app.models.otadb.LoginActivity import LoginActivity
 
+def get_user_roles():
+    return {
+        'administrator': 'System Admin',
+        'admin': 'Super Admin',
+        'exec': 'Executive',
+        'it': 'IT',
+        'associate': 'Associate',
+        'client': 'Client'
+    }
+
 def login_activity(
         user, 
         remarks, 

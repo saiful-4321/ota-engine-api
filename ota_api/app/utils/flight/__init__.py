@@ -32,7 +32,7 @@ def format_pricing_response(supplier: str, response: Dict[str, Any]) -> Dict[str
 
 
 # ---------------------------------------------------------------------------
-# PNR / Booking
+# PNR / AtBooking
 # ---------------------------------------------------------------------------
 def format_pnr_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
     if supplier == "sabre":

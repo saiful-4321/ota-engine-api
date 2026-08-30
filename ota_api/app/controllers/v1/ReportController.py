@@ -12,15 +12,15 @@ from datetime import datetime
 from fastapi import Path
 from app.utils.permission_helper import require_permission
 from app.models.otadb.SearchRequest import SearchRequest
-from app.models.otadb.Booking import Booking
-from app.models.otadb.BookingSegment import BookingSegment
-from app.models.otadb.BookingPassenger import BookingPassenger
-from app.models.otadb.Ticket import Ticket
+from app.models.otadb.AtBooking import AtBooking
+from app.models.otadb.AtBookingSegment import AtBookingSegment
+from app.models.otadb.AtBookingPassenger import AtBookingPassenger
+from app.models.otadb.AtFlightTicket import AtFlightTicket
 from app.models.otadb.Supplier import Supplier
 from app.models.otadb.Payment import Payment
-from app.models.otadb.Refund import Refund
-from app.models.otadb.BookingStatusHistory import BookingStatusHistory
-from app.models.otadb.SupplierLog import SupplierLog
+from app.models.otadb.AtRefund import AtRefund
+from app.models.otadb.AtBookingStatusHistory import AtBookingStatusHistory
+from app.models.otadb.AtPricingSnapshot import AtPricingSnapshot
 import asyncio
 import uuid
 
@@ -663,11 +663,11 @@ async def get_bookings_list(
         #     return permission_check
 
         valid_sort_columns = {
-            "id": Booking.id,
-            "created_at": Booking.created_at,
-            "booking_reference": Booking.booking_reference,
-            "total_amount": Booking.total_amount,
-            "booking_status": Booking.booking_status
+            "id": AtBooking.id,
+            "created_at": AtBooking.created_at,
+            "booking_reference": AtBooking.booking_reference,
+            "total_amount": AtPricingSnapshot.customer_total,
+            "booking_status": AtBooking.status
         }
 
         sort_by = sort_by.strip() if sort_by and sort_by.strip() else "created_at"
@@ -679,28 +679,29 @@ async def get_bookings_list(
             return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid sort_order value", {})
 
         # === Base Query ===
-        query = ota_db.query(Booking)
+        query = ota_db.query(AtBooking).outerjoin(
+            AtPricingSnapshot,
+            (AtBooking.id == AtPricingSnapshot.booking_id) & (AtPricingSnapshot.is_active == True) & (AtPricingSnapshot.snapshot_type == 'BOOKING')
+        )
 
         # === Filters ===
         if pnr and pnr.strip():
-            query = query.filter(Booking.pnr.ilike(f"%{pnr.strip()}%"))
+            query = query.filter(AtBooking.pnr.ilike(f"%{pnr.strip()}%"))
         if user_id and user_id.strip():
-            query = query.filter(Booking.user_id == user_id.strip())
+            query = query.filter(AtBooking.user_id == user_id.strip())
         if booking_status and booking_status.strip():
-            query = query.filter(Booking.booking_status == booking_status.strip().upper())
-        if payment_status and payment_status.strip():
-            query = query.filter(Booking.payment_status == payment_status.strip().upper())
+            query = query.filter(AtBooking.status == booking_status.strip().lower())
 
         if start_date:
             try:
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                query = query.filter(Booking.created_at >= start_dt)
+                query = query.filter(AtBooking.created_at >= start_dt)
             except ValueError:
                 return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid start_date format. Use YYYY-MM-DD.", {})
         if end_date:
             try:
                 end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-                query = query.filter(Booking.created_at <= end_dt)
+                query = query.filter(AtBooking.created_at <= end_dt)
             except ValueError:
                 return common_response(http_status.HTTP_400_BAD_REQUEST, "Invalid end_date format. Use YYYY-MM-DD.", {})
 
@@ -728,55 +729,56 @@ async def get_booking_details(
     ota_db: Session = Depends(get_ota_db_session),
 ):
     try:
-        booking = ota_db.query(Booking).filter(Booking.id == booking_id).first()
+        booking = ota_db.query(AtBooking).filter(AtBooking.id == booking_id).first()
         if not booking:
             # Try finding by reference or PNR if not a UUID
-            booking = ota_db.query(Booking).filter(
-                (Booking.booking_reference == booking_id) | 
-                (Booking.pnr == booking_id)
+            booking = ota_db.query(AtBooking).filter(
+                (AtBooking.booking_reference == booking_id) | 
+                (AtBooking.pnr == booking_id)
             ).first()
 
         if not booking:
             return common_response(http_status.HTTP_404_NOT_FOUND, DATA_NOT_FOUND, {})
 
+        active_snapshot = next((s for s in booking.pricing_snapshots if s.is_active), None)
+        
         # Build detailed response
         response = {
             "booking_info": {
                 "id": booking.id,
                 "reference": booking.booking_reference,
                 "pnr": booking.pnr,
-                "status": booking.booking_status,
-                "payment_status": booking.payment_status,
-                "total_amount": float(booking.total_amount),
-                "currency": booking.currency,
+                "status": booking.status,
+                "total_amount": float(active_snapshot.customer_total) if active_snapshot else 0.0,
+                "currency": active_snapshot.base_currency if active_snapshot else "BDT",
                 "created_at": booking.created_at,
             },
             "segments": [
                 {
-                    "airline": s.airline_code,
+                    "airline": s.carrier_code,
                     "flight_number": s.flight_number,
                     "origin": s.origin,
                     "destination": s.destination,
-                    "departure": s.departure_datetime,
-                    "arrival": s.arrival_datetime,
+                    "departure": s.departure_at,
+                    "arrival": s.arrival_at,
                     "cabin": s.cabin_class,
                 } for s in booking.segments
             ],
             "passengers": [
                 {
-                    "type": p.passenger_type,
+                    "type": p.type,
                     "name": f"{p.first_name} {p.last_name}",
                     "gender": p.gender,
-                    "dob": p.date_of_birth,
-                    "passport": p.passport_number,
+                    "dob": p.dob,
+                    "passport": p.passport_no,
                 } for p in booking.passengers
             ],
             "tickets": [
                 {
                     "number": t.ticket_number,
-                    "status": t.ticket_status,
+                    "status": t.status,
                     "carrier": t.validating_carrier,
-                    "issue_date": t.issue_date,
+                    "issue_date": t.issued_at,
                 } for t in booking.tickets
             ]
         }

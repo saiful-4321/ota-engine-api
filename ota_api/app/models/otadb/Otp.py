@@ -1,8 +1,9 @@
 # models.Otp.py
 from sqlalchemy import Column, Integer, String, BigInteger, Enum, DateTime
 from databases.database import OtaDbBase
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum as PyEnum
+from config import OTP_EXPIRES_TIME
 
 class OtpStatus(str, PyEnum):
     Pending = "Pending"
@@ -18,6 +19,7 @@ class Otp(OtaDbBase):
     phone = Column(String)
     otp = Column(String)
     status = Column(Enum(OtpStatus), default=OtpStatus.Pending, index=True)
-    expires_at = Column(DateTime)
+    expired_time = Column(DateTime, default=datetime.utcnow() + timedelta(minutes=OTP_EXPIRES_TIME))
+    expires_at = Column(DateTime, default=datetime.utcnow() + timedelta(minutes=OTP_EXPIRES_TIME))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

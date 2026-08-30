@@ -9,13 +9,13 @@ class SabreEndpoints:
     BAGGAGE_ALLOWANCE = "/v4/offers/baggage"
     STRUCTURE_FARE_RULES = "/v1/offers/fareRules"
 
-    # Booking and Ticketing
+    # AtBooking and Ticketing
     CREATE_PNR = "/v2.4.0/passenger/records"
     ISSUE_TICKET = "/v1.3.0/air/ticket"
     GET_PNR_DETAILS = "/v1/trip/orders/getBooking"
     CANCEL_ITINERARY = "/v1/trip/orders/cancelBooking"
-    VOID_TICKET = "/v1/air/ticket/void"
-    EXCHANGE_TICKET = "/v2/air/ticket/exchange"
+    VOID_TICKET = "/v1/trip/orders/voidFlightTickets"
+    EXCHANGE_TICKET = "/v1.3.0/air/ticket"
 
     # Queues
     QUEUE_PLACE = "/v1/trip/orders/queue"

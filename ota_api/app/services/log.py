@@ -3,7 +3,8 @@ from datetime import datetime
 from enum import Enum
 import requests
 import json
-from config import APP_NAME, APP_ENV, BROKER_NAME, ERROR_LOG_ENABLED, ERROR_MONITORING_URL
+from config import APP_NAME, APP_ENV, BROKER_NAME, ERROR_LOG_ENABLED
+# ERROR_MONITORING_URL
 from app.helpers.constants import BD_TIMEZONE
 
 class LogLevel(Enum):
@@ -53,8 +54,8 @@ def log_monitoring(exception, source, type = 'error'):
             'level': level,
             'json_data': json.dumps(json_data)
         }
-        post_url=f'{ERROR_MONITORING_URL}/add_monitoring_log'
-        response = requests.post(post_url, json=data)
+        # post_url=f'{ERROR_MONITORING_URL}/add_monitoring_log'
+        # response = requests.post(post_url, json=data)
         return
     except Exception as ex:
         print(f"Error monitoring: {ex}")

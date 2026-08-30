@@ -10,7 +10,7 @@ APP_ENV = os.environ.get("APP_ENV", 'UAT')  # Environment type (e.g., UAT, Stg, 
 
 # Error Logging & Monitoring
 ERROR_LOG_ENABLED = os.environ.get("ERROR_LOG_ENABLED", 1)
-ERROR_MONITORING_URL = os.environ.get("ERROR_MONITORING_URL", 'https://monitoring.quantbd.com')  # Monitoring service URL
+# ERROR_MONITORING_URL = os.environ.get("ERROR_MONITORING_URL", 'https://monitoring.quantbd.com')  # Monitoring service URL
 
 # MQTT Configuration (Message Queue Telemetry Transport)
 MQTT_HOST = os.environ.get("MQTT_HOST", '192.168.155.22')  # MQTT broker host
