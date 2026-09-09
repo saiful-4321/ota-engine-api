@@ -7,10 +7,328 @@ from app.models.sabre_schemas import (
     PNRDetailsRequest, CancelItineraryRequest, VoidTicketRequest, ExchangeTicketRequest,
     SeatMapRequest, BaggageAllowanceRequest, QueueRequest, FareRulesRequest
 )
+import datetime
 from app.services.sabre_endpoints import SabreEndpoints
-from config import SABRE_PCC, SABRE_LNIATA
+from typing import Optional, Dict, Any
+from app.services.supplier_config_service import SupplierConfig
+
+
+def _extract_datetime_parts(val: Any) -> tuple:
+    """Extracts (YYYY-MM-DD, HH:MM) from any date/time string or object."""
+    if not val:
+        return ("", "")
+    if isinstance(val, datetime.datetime):
+        return (val.strftime("%Y-%m-%d"), val.strftime("%H:%M"))
+    if isinstance(val, datetime.date):
+        return (val.strftime("%Y-%m-%d"), "")
+    if isinstance(val, dict):
+        d = str(val.get("date") or "").strip()[:10]
+        t = str(val.get("time") or "").strip()
+        if not d and val.get("dateTime"):
+            return _extract_datetime_parts(val["dateTime"])
+        if t and len(t) >= 5 and ":" in t:
+            t = t[:5]
+        return (d, t)
+
+    s = str(val).strip()
+    # Check if format starts with YYYY-MM-DD
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        date_part = s[:10]
+        time_part = ""
+        rest = s[10:].strip().lstrip("T").strip()
+        if len(rest) >= 5 and ":" in rest:
+            time_part = rest[:5]
+        return (date_part, time_part)
+
+    # Check if format is purely time HH:MM...
+    if ":" in s:
+        t_clean = s.replace("Z", "").strip()
+        if "+" in t_clean:
+            t_clean = t_clean.split("+")[0].strip()
+        elif "-" in t_clean and len(t_clean.split("-")) > 1 and ":" in t_clean.split("-")[-1]:
+            t_clean = t_clean.rsplit("-", 1)[0].strip()
+        if len(t_clean) >= 5 and ":" in t_clean:
+            return ("", t_clean[:5])
+
+    return ("", "")
+
+
+def _is_valid_airline_code(code: Any) -> bool:
+    """Validates that an airline code matches Sabre format: 2-char alphanumeric (with at least one letter) or 3-letter ICAO."""
+    if not code or not isinstance(code, str):
+        return False
+    c = code.strip().upper()
+    if c.isdigit():
+        return False
+    return bool(re.match(r"^([A-Z0-9]{2}|[A-Z]{3})$", c))
+
+
+def _parse_sabre_segment(segment: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Robustly extracts and normalizes flight segment fields across any schema format:
+      - Frontend search response (camelCase with nested dicts)
+      - Backoffice / DB model format (carrier_code, departure_at, departure_time with datetime strings)
+      - Standard snake_case schema (airline_code, carrier_code, origin, destination, etc.)
+      - Raw Sabre POS / RQ schema (PascalCase like DepartureDateTime, ResBookDesigCode, etc.)
+      - Mixed flat dictionaries
+    """
+    # 1. Marketing Airline
+    candidates = [
+        segment.get("carrier_code"),
+        segment.get("carrierCode"),
+        segment.get("marketing_carrier"),
+        segment.get("marketingCarrier"),
+        segment.get("marketing_carrier_code"),
+        segment.get("marketingCarrierCode"),
+        segment.get("airline_code"),
+        segment.get("airlineCode"),
+        segment.get("marketingAirlineCode"),
+        segment.get("marketing_airline"),
+        segment.get("carrier"),
+        segment.get("airline"),
+        segment.get("MarketingAirline"),
+        segment.get("validating_carrier"),
+        segment.get("validatingCarrier"),
+    ]
+    marketing_code = ""
+    for cand in candidates:
+        if not cand:
+            continue
+        if isinstance(cand, dict):
+            for sub_k in ["code", "Code", "marketing", "carrier_code", "airline_code", "iata", "IATA"]:
+                val = cand.get(sub_k)
+                if isinstance(val, str) and _is_valid_airline_code(val):
+                    marketing_code = val.strip().upper()
+                    break
+        elif isinstance(cand, str) and _is_valid_airline_code(cand):
+            marketing_code = cand.strip().upper()
+        if marketing_code:
+            break
+
+    # 2. Flight Number & Airline Code from FlightNumber (e.g. 'QR641' or 'QR 641')
+    fn_raw = (
+        segment.get("flight_number")
+        or segment.get("flightNumber")
+        or segment.get("FlightNumber")
+        or segment.get("marketing_flight_number")
+        or segment.get("marketingFlightNumber")
+        or segment.get("marketing_flight_no")
+    )
+    if not fn_raw and isinstance(segment.get("MarketingAirline"), dict):
+        fn_raw = segment["MarketingAirline"].get("FlightNumber")
+    if not fn_raw and isinstance(segment.get("airline"), dict):
+        fn_raw = segment["airline"].get("marketingFlightNumber") or segment["airline"].get("flightNumber")
+
+    if not marketing_code and fn_raw and isinstance(fn_raw, str):
+        # Extract airline prefix if it contains letters (e.g. 'SQ101', 'BG-641', '6E123')
+        m = re.match(r"^([A-Za-z]{2,3}|[A-Za-z][0-9]|[0-9][A-Za-z])\s*[-]?\s*(\d+)$", str(fn_raw).strip())
+        if m and _is_valid_airline_code(m.group(1)):
+            marketing_code = m.group(1).upper()
+
+    fn_digits = "".join(c for c in str(fn_raw or "") if c.isdigit())
+    flight_number_int = int(fn_digits) if fn_digits else 0
+    flight_number_str = fn_digits if fn_digits else str(fn_raw or "").strip()
+
+    # 3. Operating Airline
+    op_candidates = [
+        segment.get("operating_carrier"),
+        segment.get("operatingCarrier"),
+        segment.get("operating_airline"),
+        segment.get("operating_airline_code"),
+        segment.get("operatingAirlineCode"),
+        segment.get("OperatingAirline"),
+    ]
+    operating_code = None
+    for cand in op_candidates:
+        if not cand:
+            continue
+        if isinstance(cand, dict):
+            for sub_k in ["code", "Code", "operating", "carrier_code", "airline_code", "iata", "IATA"]:
+                val = cand.get(sub_k)
+                if isinstance(val, str) and _is_valid_airline_code(val):
+                    operating_code = val.strip().upper()
+                    break
+        elif isinstance(cand, str) and _is_valid_airline_code(cand):
+            operating_code = cand.strip().upper()
+        if operating_code:
+            break
+
+    # Fallback marketing_code to operating_code or validating_carrier if still empty
+    if not marketing_code:
+        if operating_code and _is_valid_airline_code(operating_code):
+            marketing_code = operating_code
+        else:
+            vc = segment.get("validating_carrier") or segment.get("validatingCarrier")
+            if isinstance(vc, str) and _is_valid_airline_code(vc):
+                marketing_code = vc.strip().upper()
+
+    marketing_code = str(marketing_code or "").strip().upper()
+
+    # 4. Origin Code
+    orig_val = (
+        segment.get("OriginLocation")
+        or segment.get("origin_code")
+        or segment.get("originCode")
+        or segment.get("originAirportCode")
+        or segment.get("origin_airport")
+        or segment.get("originAirport")
+        or segment.get("departure_airport")
+        or segment.get("departureAirport")
+        or segment.get("departureAirportCode")
+        or segment.get("origin")
+        or segment.get("departure")
+    )
+    origin_code = ""
+    if isinstance(orig_val, dict):
+        origin_code = (
+            orig_val.get("LocationCode")
+            or orig_val.get("code")
+            or orig_val.get("airport")
+            or orig_val.get("airport_code")
+            or ""
+        )
+    elif isinstance(orig_val, str):
+        val_clean = orig_val.strip()
+        if len(val_clean) == 3:
+            origin_code = val_clean
+    if not origin_code:
+        raw_orig = segment.get("origin")
+        if isinstance(raw_orig, str) and len(raw_orig.strip()) == 3:
+            origin_code = raw_orig.strip()
+    origin_code = str(origin_code or "").strip().upper()
+
+    # 5. Destination Code
+    dest_val = (
+        segment.get("DestinationLocation")
+        or segment.get("destination_code")
+        or segment.get("destinationCode")
+        or segment.get("arrivalAirportCode")
+        or segment.get("destination_airport")
+        or segment.get("destinationAirport")
+        or segment.get("arrival_airport")
+        or segment.get("arrivalAirport")
+        or segment.get("arrivalAirportCode")
+        or segment.get("destination")
+        or segment.get("arrival")
+    )
+    dest_code = ""
+    if isinstance(dest_val, dict):
+        dest_code = (
+            dest_val.get("LocationCode")
+            or dest_val.get("code")
+            or dest_val.get("airport")
+            or dest_val.get("airport_code")
+            or ""
+        )
+    elif isinstance(dest_val, str):
+        val_clean = dest_val.strip()
+        if len(val_clean) == 3:
+            dest_code = val_clean
+    if not dest_code:
+        raw_dest = segment.get("destination")
+        if isinstance(raw_dest, str) and len(raw_dest.strip()) == 3:
+            dest_code = raw_dest.strip()
+    dest_code = str(dest_code or "").strip().upper()
+
+    # 6. Departure Date & Time
+    dep_date = ""
+    dep_time = ""
+    for k in [
+        "departure_at", "departure_time", "departure_date", "departureDate",
+        "dep_date", "dep_time", "departureDateTime", "DepartureDateTime", "departure"
+    ]:
+        if k in segment and segment[k]:
+            d, t = _extract_datetime_parts(segment[k])
+            if not dep_date and d:
+                dep_date = d
+            if not dep_time and t:
+                dep_time = t
+            if dep_date and dep_time:
+                break
+
+    if not dep_date:
+        dep_date = datetime.date.today().isoformat()
+    if not dep_time:
+        dep_time = "00:00"
+
+    dep_time_seconds = f"{dep_time}:00" if len(dep_time) == 5 else dep_time
+    dep_datetime = f"{dep_date}T{dep_time_seconds}"
+
+    # 7. Arrival Date & Time
+    arr_date = ""
+    arr_time = ""
+    for k in [
+        "arrival_at", "arrival_time", "arrival_date", "arrivalDate",
+        "arr_date", "arr_time", "arrivalDateTime", "ArrivalDateTime", "arrival"
+    ]:
+        if k in segment and segment[k]:
+            d, t = _extract_datetime_parts(segment[k])
+            if not arr_date and d:
+                arr_date = d
+            if not arr_time and t:
+                arr_time = t
+            if arr_date and arr_time:
+                break
+
+    if not arr_date:
+        arr_date = dep_date
+    if not arr_time:
+        arr_time = "23:59"
+
+    arr_time_seconds = f"{arr_time}:00" if len(arr_time) == 5 else arr_time
+    arr_datetime = f"{arr_date}T{arr_time_seconds}"
+
+    # 8. Booking Class / Cabin Class
+    b_class = (
+        segment.get("booking_class")
+        or segment.get("bookingClass")
+        or segment.get("booking_code")
+        or segment.get("bookingCode")
+        or segment.get("cabin_class")
+        or segment.get("cabinClass")
+        or segment.get("ResBookDesigCode")
+        or segment.get("resBookDesigCode")
+        or segment.get("CabinCode")
+        or segment.get("Cabin")
+    )
+    if not b_class and isinstance(segment.get("details"), dict):
+        b_class = (
+            segment["details"].get("bookingClass")
+            or segment["details"].get("bookingCode")
+            or segment["details"].get("cabinClass")
+        )
+
+    if isinstance(b_class, dict):
+        booking_class = b_class.get("code") or b_class.get("Code") or "Y"
+    elif isinstance(b_class, str) and b_class.strip():
+        booking_class = b_class.strip().upper()
+    else:
+        booking_class = "Y"
+
+    return {
+        "origin": origin_code,
+        "destination": dest_code,
+        "departure_date": dep_date,
+        "departure_time": dep_time,
+        "departure_datetime": dep_datetime,
+        "arrival_date": arr_date,
+        "arrival_time": arr_time,
+        "arrival_datetime": arr_datetime,
+        "marketing_airline": marketing_code,
+        "operating_airline": operating_code,
+        "flight_number_int": flight_number_int,
+        "flight_number_str": flight_number_str,
+        "booking_class": booking_class
+    }
+
 
 class SabreFlightService(SabreBaseService):
+
+
+    
+    def __init__(self, config: Optional[SupplierConfig] = None):
+        super().__init__(config=config)
+
     
     def search_flights(self, search_params: FlightSearchRequest) -> dict:
         """
@@ -56,7 +374,7 @@ class SabreFlightService(SabreBaseService):
                 "POS": {
                     "Source": [
                         {
-                            "PseudoCityCode": SABRE_PCC,
+                            "PseudoCityCode": self.pcc,
                             "RequestorID": {
                                 "Type": "1",
                                 "ID": "1",
@@ -219,110 +537,36 @@ class SabreFlightService(SabreBaseService):
         """
         Calls Sabre's Flight Check API to revalidate price and availability.
         """
-        import datetime
         url = f"{self.base_url}{SabreEndpoints.FLIGHT_CHECK}"
         headers = self.get_headers()
         
+        print(f"[PRICE_DEBUG] Incoming pricing_params: {pricing_params.dict()}", flush=True)
+
         # Extract and format journeys/flights for Flight Check API v1 (Strict Schema)
         flights = []
+        last_mktg = ""
         for segment in pricing_params.flight_segments:
-            # Departure Date and Time separation
-            departure = segment.get("DepartureDateTime") or segment.get("departure")
-            dep_date = ""
-            dep_time = ""
-            
-            direct_dep_date = segment.get("departure_date") or segment.get("departureDate") or segment.get("date")
-            
-            if isinstance(departure, dict):
-                dep_date = departure.get("date", "")
-                dep_time = departure.get("time", "")
-            elif isinstance(departure, str) and "T" in departure:
-                parts = departure.split("T")
-                dep_date = parts[0]
-                dep_time = parts[1][:5] # HH:MM
-            elif isinstance(departure, str):
-                if len(departure) >= 10:
-                    dep_date = departure[:10]
-                if len(departure) >= 16:
-                    dep_time = departure[11:16]
-            
-            if not dep_date and direct_dep_date:
-                dep_date = str(direct_dep_date)[:10]
+            p = _parse_sabre_segment(segment)
+            mktg = p["marketing_airline"] or last_mktg
+            if mktg:
+                last_mktg = mktg
+            print(f"[PRICE_DEBUG] Input segment: {segment} -> Parsed: {p} (mktg: {mktg})", flush=True)
+            flight_obj = {
+                "departureDate": p["departure_date"],
+                "departureTime": p["departure_time"],
+                "departureAirportCode": p["origin"],
+                "arrivalDate": p["arrival_date"],
+                "arrivalTime": p["arrival_time"],
+                "arrivalAirportCode": p["destination"],
+                "marketingAirlineCode": mktg,
+                "marketingFlightNumber": p["flight_number_int"],
+                "bookingClass": p["booking_class"]
+            }
 
-            # Fallbacks for departure
-            if not dep_date:
-                dep_date = datetime.date.today().isoformat()
-            if not dep_time:
-                dep_time = "00:00"
-            
-            # Arrival Date and Time separation
-            arrival = segment.get("ArrivalDateTime") or segment.get("arrival")
-            arr_date = ""
-            arr_time = ""
-            
-            direct_arr_date = segment.get("arrival_date") or segment.get("arrivalDate")
-            
-            if isinstance(arrival, dict):
-                arr_date = arrival.get("date", "")
-                arr_time = arrival.get("time", "")
-            elif isinstance(arrival, str) and "T" in arrival:
-                parts = arrival.split("T")
-                arr_date = parts[0]
-                arr_time = parts[1][:5] # HH:MM
-            elif isinstance(arrival, str):
-                if len(arrival) >= 10:
-                    arr_date = arrival[:10]
-                if len(arrival) >= 16:
-                    arr_time = arrival[11:16]
-                    
-            if not arr_date and direct_arr_date:
-                arr_date = str(direct_arr_date)[:10]
-                
-            # Fallbacks for arrival
-            if not arr_date:
-                arr_date = dep_date
-            if not arr_time:
-                arr_time = "23:59"
-            
-            # AtBooking class
-            booking_class = segment.get("ResBookDesigCode") or segment.get("bookingClass") or segment.get("bookingCode")
-            if not booking_class:
-                details = segment.get("details", {})
-                booking_class = details.get("bookingClass") or segment.get("bookingCode") or segment.get("cabinClass") or "Y"
-            
-            # Extract codes
-            dest_loc = segment.get("DestinationLocation") or segment.get("destination") or segment.get("arrival")
-            dest_code = ""
-            if isinstance(dest_loc, dict):
-                dest_code = dest_loc.get("LocationCode") or dest_loc.get("code") or dest_loc.get("airport") or ""
-            else:
-                dest_code = str(dest_loc or "")
-                
-            origin_loc = segment.get("OriginLocation") or segment.get("origin") or segment.get("departure")
-            origin_code = ""
-            if isinstance(origin_loc, dict):
-                origin_code = origin_loc.get("LocationCode") or origin_loc.get("code") or origin_loc.get("airport") or ""
-            else:
-                origin_code = str(origin_loc or "")
-                
-            airline_info = segment.get("MarketingAirline") or segment.get("airline")
-            airline_code = ""
-            if isinstance(airline_info, dict):
-                airline_code = airline_info.get("Code") or airline_info.get("marketing") or airline_info.get("code") or ""
-            else:
-                airline_code = str(airline_info or "")
+            if p.get("operating_airline"):
+                flight_obj["operatingAirlineCode"] = p["operating_airline"]
+            flights.append(flight_obj)
 
-            flights.append({
-                "departureDate": dep_date,
-                "departureTime": dep_time,
-                "departureAirportCode": origin_code,
-                "arrivalDate": arr_date,
-                "arrivalTime": arr_time,
-                "arrivalAirportCode": dest_code,
-                "marketingAirlineCode": airline_code,
-                "marketingFlightNumber": int("".join(c for c in str(segment.get("FlightNumber") or segment.get("flightNumber") or segment.get("flight_number") or "0") if c.isdigit()) or 0),
-                "bookingClass": booking_class
-            })
 
         # Travelers list (Strict Schema)
         travelers = []
@@ -413,108 +657,24 @@ class SabreFlightService(SabreBaseService):
                 
         flight_segments = []
         for segment in booking_params.flight_segments:
+            p = _parse_sabre_segment(segment)
             num_passengers = str(len(booking_params.passengers))
-            
-            # Extract and format DepartureDateTime properly
-            departure = segment.get("DepartureDateTime") or segment.get("departure")
-            dep_date = ""
-            dep_time = ""
-            
-            direct_dep_date = segment.get("departure_date") or segment.get("departureDate") or segment.get("date")
-            
-            if isinstance(departure, dict):
-                dep_date = departure.get("date", "")
-                dep_time = departure.get("time", "")
-            elif isinstance(departure, str) and "T" in departure:
-                parts = departure.split("T")
-                dep_date = parts[0]
-                dep_time = parts[1][:8] # Keep up to HH:MM:SS
-            elif isinstance(departure, str):
-                if len(departure) >= 10:
-                    dep_date = departure[:10]
-                if len(departure) >= 16:
-                    dep_time = departure[11:]
-            
-            if not dep_date and direct_dep_date:
-                dep_date = str(direct_dep_date)[:10]
 
-            # Fallbacks for departure
-            if not dep_date:
-                import datetime
-                dep_date = datetime.date.today().isoformat()
-            if not dep_time:
-                dep_time = "00:00:00"
-            else:
-                # Ensure the time has seconds, e.g. HH:MM -> HH:MM:SS
-                dep_time = dep_time.strip()
-                main_time = dep_time
-                tz_suffix = ""
-                if "+" in dep_time:
-                    parts = dep_time.split("+")
-                    main_time = parts[0]
-                    tz_suffix = "+" + parts[1]
-                elif "-" in dep_time and len(dep_time.split("-")) > 1 and ":" in dep_time.split("-")[-1]:
-                    parts = dep_time.rsplit("-", 1)
-                    main_time = parts[0]
-                    tz_suffix = "-" + parts[1]
-                elif dep_time.endswith("Z"):
-                    main_time = dep_time[:-1]
-                    tz_suffix = "Z"
-                
-                main_time = main_time.strip()
-                if len(main_time) == 5:
-                    main_time = f"{main_time}:00"
-                elif len(main_time) == 8:
-                    pass
-                elif len(main_time) > 8:
-                    main_time = main_time[:8]
-                dep_time = f"{main_time}{tz_suffix}"
-            
-            departure_str = f"{dep_date}T{dep_time}"
-
-            flight_number = str(segment.get("FlightNumber") or segment.get("flightNumber") or segment.get("flight_number") or "")
-            
-            res_book_desig_code = segment.get("ResBookDesigCode") or segment.get("bookingClass") or segment.get("bookingCode") or segment.get("cabinClass") or segment.get("cabin_class")
-            if not res_book_desig_code:
-                details = segment.get("details", {})
-                res_book_desig_code = details.get("bookingClass") or details.get("bookingCode") or "Y"
-            
-            dest_loc = segment.get("DestinationLocation") or segment.get("destination") or segment.get("arrival")
-            dest_code = ""
-            if isinstance(dest_loc, dict):
-                dest_code = dest_loc.get("LocationCode") or dest_loc.get("code") or dest_loc.get("airport") or ""
-            else:
-                dest_code = str(dest_loc or "")
-                
-            origin_loc = segment.get("OriginLocation") or segment.get("origin") or segment.get("departure")
-            origin_code = ""
-            if isinstance(origin_loc, dict):
-                origin_code = origin_loc.get("LocationCode") or origin_loc.get("code") or origin_loc.get("airport") or ""
-            else:
-                origin_code = str(origin_loc or "")
-                
-            marketing_airline = segment.get("MarketingAirline") or segment.get("airline")
-            airline_code = ""
-            if isinstance(marketing_airline, dict):
-                airline_code = marketing_airline.get("Code") or marketing_airline.get("marketing") or marketing_airline.get("code") or ""
-            else:
-                airline_code = str(marketing_airline or "")
-            
             flight_segments.append({
-                "DepartureDateTime": departure_str,
-                "FlightNumber": flight_number,
+                "DepartureDateTime": p["departure_datetime"],
+                "FlightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
                 "NumberInParty": num_passengers,
-                "ResBookDesigCode": res_book_desig_code,
+                "ResBookDesigCode": p["booking_class"],
                 "Status": "NN",
                 "DestinationLocation": {
-                    "LocationCode": dest_code
+                    "LocationCode": p["destination"]
                 },
                 "MarketingAirline": {
-                    "Code": airline_code,
-                    "FlightNumber": flight_number
+                    "Code": p["marketing_airline"],
+                    "FlightNumber": str(p["flight_number_int"] or p["flight_number_str"])
                 },
                 "OriginLocation": {
-                    "LocationCode": origin_code
+                    "LocationCode": p["origin"]
                 }
             })
 
@@ -531,13 +691,31 @@ class SabreFlightService(SabreBaseService):
         for p in booking_params.passengers:
             ptc = p.passenger_type or "ADT"
             pax_types_count[ptc] = pax_types_count.get(ptc, 0) + 1
-        
+
         pricing_pax_types = []
         for ptc, count in pax_types_count.items():
             pricing_pax_types.append({
                 "Code": ptc,
                 "Quantity": str(count)
             })
+
+        pricing_qualifiers = {
+            "PassengerType": pricing_pax_types
+        }
+
+        # Build AirPrice OptionalQualifiers — include FlightQualifiers.ValidatingCarrier when
+        # a specific carrier is provided so Sabre's stored Price Quote is bound to a carrier
+        # that this PCC has Electronic Ticketing Authority (ETA) for.
+        # NOTE: ValidatingCarrier belongs under FlightQualifiers (not PricingQualifiers) in v2.4.0.
+        optional_qualifiers: dict = {
+            "PricingQualifiers": pricing_qualifiers
+        }
+        if getattr(booking_params, "validating_carrier", None):
+            optional_qualifiers["FlightQualifiers"] = {
+                "ValidatingCarrier": {
+                    "Code": booking_params.validating_carrier.strip().upper()
+                }
+            }
 
         payload = {
             "CreatePassengerNameRecordRQ": {
@@ -559,11 +737,7 @@ class SabreFlightService(SabreBaseService):
                     {
                         "PriceRequestInformation": {
                             "Retain": True,
-                            "OptionalQualifiers": {
-                                "PricingQualifiers": {
-                                    "PassengerType": pricing_pax_types
-                                }
-                            }
+                            "OptionalQualifiers": optional_qualifiers
                         }
                     }
                 ],
@@ -627,7 +801,7 @@ class SabreFlightService(SabreBaseService):
                 print(f"Sabre Error Response: {response.text}", flush=True)
             raise Exception(f"PNR creation failed. {str(e)}{error_details}")
 
-    def reprice_pnr(self, pnr: str, passenger_types: list = None) -> dict:
+    def reprice_pnr(self, pnr: str, passenger_types: list = None, validating_carrier: str = None) -> dict:
         """
         Reprices / re-generates the price quote on an existing PNR.
         Used when the original price quote has expired.
@@ -635,9 +809,10 @@ class SabreFlightService(SabreBaseService):
         Returns both the raw Sabre response and a parsed `pricing` dict with:
           - total_fare, base_fare, tax_amount, currency, quote_number
 
-        :param pnr:             6-character Sabre Record Locator
-        :param passenger_types: list of dicts like [{"Code": "ADT", "Quantity": "1"}]
-                                If None, defaults to 1 adult.
+        :param pnr:                6-character Sabre Record Locator
+        :param passenger_types:    list of dicts like [{"Code": "ADT", "Quantity": "1"}]
+                                   If None, defaults to 1 adult.
+        :param validating_carrier: Optional airline code to force validating carrier on the quote
         :return: dict with keys: raw_response, pricing, success, message
         """
         url = f"{self.base_url}{SabreEndpoints.CREATE_PNR}?mode=reprice"
@@ -645,6 +820,14 @@ class SabreFlightService(SabreBaseService):
 
         if not passenger_types:
             passenger_types = [{"Code": "ADT", "Quantity": "1"}]
+
+        reprice_pricing_qualifiers = {
+            "PassengerType": passenger_types
+        }
+        if validating_carrier:
+            reprice_pricing_qualifiers["ValidatingCarrier"] = {
+                "Code": validating_carrier.upper()
+            }
 
         payload = {
             "CreatePassengerNameRecordRQ": {
@@ -661,9 +844,7 @@ class SabreFlightService(SabreBaseService):
                         "PriceRequestInformation": {
                             "Retain": True,
                             "OptionalQualifiers": {
-                                "PricingQualifiers": {
-                                    "PassengerType": passenger_types
-                                }
+                                "PricingQualifiers": reprice_pricing_qualifiers
                             }
                         }
                     }
@@ -674,7 +855,7 @@ class SabreFlightService(SabreBaseService):
                 "PostProcessing": {
                     "EndTransaction": {
                         "Source": {
-                            "ReceivedFrom": f"{SABRE_PCC} REPRICE"
+                            "ReceivedFrom": f"{self.pcc} REPRICE"
                         }
                     }
                 }
@@ -777,30 +958,60 @@ class SabreFlightService(SabreBaseService):
     def issue_ticket(self, ticketing_params: TicketingRequest) -> dict:
         """
         Issues an e-ticket for the given PNR.
-        The caller is responsible for ensuring the price quote is fresh
-        (call reprice_pnr() first if needed).
+
+        DesignatePrinter notes (Sabre REST AirTicketRQ v1.3.0):
+          - Ticket.CountryCode : BSP/ARC country for settlement — do NOT add LNIATA here;
+                                  it is invalid on the Ticket node and causes TKT PRT NOT ASSIGNED.
+          - Hardcopy.LNIATA    : physical hardcopy printer address (optional, omitted when blank).
+          - InvoiceItinerary.LNIATA: invoice printer address (optional, omitted when blank).
+
+        ValidatingCarrier override:
+          Pass `validating_carrier` in the request body to override the carrier on the stored
+          Price Quote (PQ). Required when the PCC has ETA for a specific carrier but Sabre
+          auto-assigned a different one during pricing (AUTH CARRIER INVLD-0633).
         """
         url = f"{self.base_url}{SabreEndpoints.ISSUE_TICKET}"
         headers = self.get_headers()
 
-        lniata = ticketing_params.printer_id or SABRE_LNIATA
-        country = ticketing_params.country_code or "BD"
+        lniata  = ticketing_params.printer_id or self.lniata
+        country = ticketing_params.country_code or self.config.country_code or "BD"
+
+        # ── Ticket printer: CountryCode only (no LNIATA — causes TKT PRT NOT ASSIGNED) ──
+        printers: dict = {
+            "Ticket": {
+                "CountryCode": country
+            }
+        }
+        # Only add physical printer nodes when an LNIATA is configured
+        if lniata:
+            printers["Hardcopy"]         = {"LNIATA": lniata}
+            printers["InvoiceItinerary"] = {"LNIATA": lniata}
+
+        # ── PricingQualifiers: quote record + optional validating carrier override ──────
+        pricing_qualifiers: dict = {
+            "PriceQuote": [
+                {
+                    "Record": [
+                        {
+                            "Number":  ticketing_params.quote_number or 1,
+                            "Reissue": ticketing_params.reissue or False
+                        }
+                    ]
+                }
+            ]
+        }
+        # Note: In Sabre AirTicketRQ v1.3.0, ValidatingCarrier is NOT an allowed property under PricingQualifiers
+        # (it must be specified during booking/pricing via FlightQualifiers in CreatePassengerNameRecordRQ).
+        if ticketing_params.validating_carrier:
+            vc_code = ticketing_params.validating_carrier.strip().upper()
+            print(f"[Issue] Validating carrier specified: {vc_code} (handled via stored PriceQuote)", flush=True)
+
 
         payload = {
             "AirTicketRQ": {
                 "version": "1.3.0",
                 "DesignatePrinter": {
-                    "Printers": {
-                        "Ticket": {
-                            "CountryCode": country
-                        },
-                        "Hardcopy": {
-                            "LNIATA": lniata
-                        },
-                        "InvoiceItinerary": {
-                            "LNIATA": lniata
-                        }
-                    }
+                    "Printers": printers
                 },
                 "Itinerary": {
                     "ID": ticketing_params.pnr
@@ -817,33 +1028,21 @@ class SabreFlightService(SabreBaseService):
                                 "Percent": ticketing_params.commission_percent if ticketing_params.commission_percent is not None else 7
                             }
                         },
-                        "PricingQualifiers": {
-                            "PriceQuote": [
-                                {
-                                    "Record": [
-                                        {
-                                            "Number": ticketing_params.quote_number or 1,
-                                            "Reissue": ticketing_params.reissue or False
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
+                        "PricingQualifiers": pricing_qualifiers
                     }
                 ],
                 "PostProcessing": {
                     "EndTransaction": {
                         "Source": {
-                            "ReceivedFrom": f"{SABRE_PCC} WEB"
+                            "ReceivedFrom": f"{self.pcc} WEB"
                         }
                     }
                 }
             }
         }
 
-        # Validating carrier is already bound to the stored Price Quote (PQ) during CreatePassengerNameRecordRQ.
-
         print(f"[Issue] Sending Ticketing request to Sabre: {url} | PNR: {ticketing_params.pnr}", flush=True)
+        print(f"[Issue] AirTicketRQ payload: {json.dumps(payload, indent=2)}", flush=True)
 
         try:
             response = requests.post(url, headers=headers, json=payload)
@@ -938,16 +1137,16 @@ class SabreFlightService(SabreBaseService):
         url = f"{self.base_url}{SabreEndpoints.EXCHANGE_TICKET}"
         headers = self.get_headers()
         
-        country = getattr(exchange_params, 'country_code', None) or "BD"
-        lniata = SABRE_LNIATA
+        country = getattr(exchange_params, 'country_code', None) or self.config.country_code or "BD"
+        lniata = self.lniata
 
         payload = {
             "AirTicketRQ": {
                 "version": "1.3.0",
-                "targetCity": SABRE_PCC,
+                "targetCity": self.pcc,
                 "DesignatePrinter": {
                     "Printers": {
-                        "AtFlightTicket": {
+                        "Ticket": {
                             "CountryCode": country
                         },
                         "Hardcopy": {
@@ -990,7 +1189,7 @@ class SabreFlightService(SabreBaseService):
                 "PostProcessing": {
                     "EndTransaction": {
                         "Source": {
-                            "ReceivedFrom": f"{SABRE_PCC} WEB"
+                            "ReceivedFrom": f"{self.pcc} WEB"
                         }
                     }
                 }
@@ -1000,7 +1199,7 @@ class SabreFlightService(SabreBaseService):
         print(f"[Exchange] Sending AtFlightTicket Exchange request to Sabre: {url} | PNR: {exchange_params.pnr} | Original AtFlightTicket: {exchange_params.original_ticket_number}", flush=True)
         
         try:
-            response = requests.post(url, headers=headers, json=payload)
+            response = self.session.post(url, headers=headers, json=payload)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -1017,45 +1216,17 @@ class SabreFlightService(SabreBaseService):
         url = f"{self.base_url}{SabreEndpoints.SEAT_MAP}"
         headers = self.get_headers()
         
-        segment = seat_params.flight_segment
-        
-        def get_val(keys, default=None):
-            for k in keys:
-                if k in segment:
-                    return segment[k]
-            return default
-
-        # Extracting specific fields needed for SeatMapRQ
-        dest_loc = get_val(["destination", "DestinationLocation", "arrival"])
-        dest_code = dest_loc.get("LocationCode") or dest_loc.get("code") if isinstance(dest_loc, dict) else str(dest_loc or "")
-        
-        origin_loc = get_val(["origin", "OriginLocation", "departure"])
-        origin_code = origin_loc.get("LocationCode") or origin_loc.get("code") if isinstance(origin_loc, dict) else str(origin_loc or "")
-        
-        airline_info = get_val(["airline", "marketingAirline", "MarketingAirline"])
-        airline_code = airline_info.get("Code") or airline_info.get("code") if isinstance(airline_info, dict) else str(airline_info or "")
-
-        # Handle Date formatting (YYYY-MM-DD)
-        departure_val = get_val(["departure_date", "departureDate", "DepartureDateTime", "departure"])
-        departure_date = ""
-        if isinstance(departure_val, dict):
-            departure_date = departure_val.get("date") or ""
-        elif isinstance(departure_val, str):
-            if "T" in departure_val:
-                departure_date = departure_val.split("T")[0]
-            else:
-                departure_date = departure_val[:10]
-        
+        p = _parse_sabre_segment(seat_params.flight_segment)
         payload = {
             "SeatMapRQ": {
                 "version": "3.0.0",
                 "Flight": {
-                    "Destination": dest_code,
-                    "Origin": origin_code,
-                    "DepartureDate": departure_date,
-                    "MarketingAirline": airline_code,
-                    "FlightNumber": str(get_val(["flight_number", "flightNumber", "FlightNumber"]) or ""),
-                    "ResBookDesigCode": get_val(["booking_class", "bookingClass", "ResBookDesigCode", "cabinClass"]) or "Y"
+                    "Destination": p["destination"],
+                    "Origin": p["origin"],
+                    "DepartureDate": p["departure_date"],
+                    "MarketingAirline": p["marketing_airline"],
+                    "FlightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
+                    "ResBookDesigCode": p["booking_class"]
                 }
             }
         }
@@ -1148,57 +1319,18 @@ class SabreFlightService(SabreBaseService):
         url = f"{self.base_url}{SabreEndpoints.STRUCTURE_FARE_RULES}"
         headers = self.get_headers()
 
-        segment = rules_params.flight_segment
-
-        # Extract codes robustly
-        dest_loc = segment.get("DestinationLocation") or segment.get("destination") or segment.get("arrival")
-        dest_code = ""
-        if isinstance(dest_loc, dict):
-            dest_code = dest_loc.get("LocationCode") or dest_loc.get("code") or dest_loc.get("airport") or ""
-        else:
-            dest_code = str(dest_loc or "")
-            
-        origin_loc = segment.get("OriginLocation") or segment.get("origin") or segment.get("departure")
-        origin_code = ""
-        if isinstance(origin_loc, dict):
-            origin_code = origin_loc.get("LocationCode") or origin_loc.get("code") or origin_loc.get("airport") or ""
-        else:
-            origin_code = str(origin_loc or "")
-            
-        airline_info = segment.get("MarketingAirline") or segment.get("airline")
-        airline_code = ""
-        if isinstance(airline_info, dict):
-            airline_code = airline_info.get("Code") or airline_info.get("marketing") or airline_info.get("code") or ""
-        else:
-            airline_code = str(airline_info or "")
-
-        # Handle Date formatting (YYYY-MM-DD)
-        departure_val = segment.get("departure_date") or segment.get("departureDate") or segment.get("DepartureDateTime") or segment.get("departure")
-        departure_date = ""
-        if isinstance(departure_val, dict):
-            departure_date = departure_val.get("date") or ""
-        elif isinstance(departure_val, str):
-            if "T" in departure_val:
-                departure_date = departure_val.split("T")[0]
-            else:
-                departure_date = departure_val[:10]
-
-        booking_class = segment.get("booking_class") or segment.get("bookingClass") or segment.get("bookingCode") or segment.get("ResBookDesigCode") or segment.get("cabinClass") or segment.get("cabin_class") or "Y"
-        if isinstance(booking_class, dict):
-            booking_class = booking_class.get("code") or "Y"
-
-        flight_number = str(segment.get("flight_number") or segment.get("flightNumber") or segment.get("FlightNumber") or "")
+        p = _parse_sabre_segment(rules_params.flight_segment)
 
         # Build flight segment for fare rules lookup
         payload = {
             "originDestination": [
                 {
                     "departure": {
-                        "airportCode": origin_code,
-                        "date": departure_date
+                        "airportCode": p["origin"],
+                        "date": p["departure_date"]
                     },
                     "arrival": {
-                        "airportCode": dest_code
+                        "airportCode": p["destination"]
                     }
                 }
             ],

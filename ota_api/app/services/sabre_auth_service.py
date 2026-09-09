@@ -6,18 +6,9 @@ from typing import Dict, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from config import (
-    SABRE_CLIENT_ID,
-    SABRE_CLIENT_SECRET,
-    SABRE_AUTH_SECRET,   
-    SABRE_URL,
-    SABRE_USERNAME,
-    SABRE_PASSWORD,
-    SABRE_TOKEN_EXPIRY_DAYS
-)
+from app.services.supplier_config_service import SupplierConfigService, SupplierConfig
 from app.utils.redis_utils import redis_helper
 from app.services.sabre_endpoints import SabreEndpoints
-
 
 
 def create_http_session() -> requests.Session:
@@ -42,14 +33,17 @@ def create_http_session() -> requests.Session:
 # =========================
 
 class SabreAuthService:
-    def __init__(self):
-        self.client_id = str(SABRE_CLIENT_ID).strip()
-        self.client_secret = str(SABRE_CLIENT_SECRET).strip()
-        self.auth_secret = str(SABRE_AUTH_SECRET).strip() if SABRE_AUTH_SECRET else None
-        self.base_url = SABRE_URL.rstrip("/")
-        self.username = str(SABRE_USERNAME).strip()
-        self.password = str(SABRE_PASSWORD).strip()
-        self.session = create_http_session()
+    def __init__(self, config: Optional[SupplierConfig] = None):
+        self.config = config or SupplierConfigService.get_supplier_config("sabre", "flight")
+        self.client_id     = self.config.client_id
+        self.client_secret = self.config.client_secret
+        self.auth_secret   = self.config.auth_secret
+        self.base_url      = self.config.base_url
+        self.username      = self.config.username
+        self.password      = self.config.password
+        self.session       = create_http_session()
+
+
 
     def _get_encoded_credentials(self) -> str:
         # If precomputed secret exists
@@ -111,22 +105,34 @@ class SabreAuthService:
 class SabreBaseService:
     _lock = threading.Lock()
 
-    def __init__(self):
-        self.auth_service = SabreAuthService()
-        self.base_url = SABRE_URL.rstrip("/")
-        self.session = create_http_session()
+    def __init__(self, config: Optional[SupplierConfig] = None):
+        self.config              = config or SupplierConfigService.get_supplier_config("sabre", "flight")
+        self.auth_service        = SabreAuthService(config=self.config)
+        self.base_url            = self.config.base_url
+        self.supplier_id         = self.config.supplier_id
+        self.supplier_code       = self.config.supplier_code
+        self.integration_provider = self.config.integration_provider   # e.g. 'sabre'
+
+        self.pcc                 = self.config.pcc
+        self.lniata              = self.config.lniata
+        self.token_expiry_days   = self.config.token_expiry_days
+        self.session             = create_http_session()
 
         self._access_token: Optional[str] = None
-        self._token_expiry: float = 0.0
+        self._token_expiry: float          = 0.0
+
+    @property
+    def token_cache_key(self) -> str:
+        return f"sabre_access_token:{self.supplier_id}:{self.pcc}"
 
     def _refresh_token(self):
         token_data = self.auth_service.get_access_token()
 
         self._access_token = token_data["access_token"]
         
-        # Cache in Redis
-        ttl_minutes = SABRE_TOKEN_EXPIRY_DAYS * 24 * 60
-        redis_helper.set_data_ttl("sabre_access_token", self._access_token, ttl_minutes=ttl_minutes)
+        # Cache in Redis with supplier-specific key
+        ttl_minutes = self.token_expiry_days * 24 * 60
+        redis_helper.set_data_ttl(self.token_cache_key, self._access_token, ttl_minutes=ttl_minutes)
 
         expires_in = int(token_data.get("expires_in", 3600))
         # safety buffer 60s
@@ -145,7 +151,7 @@ class SabreBaseService:
                 return self._access_token
 
             # Try fetching from Redis
-            cached_token = redis_helper.get_data("sabre_access_token")
+            cached_token = redis_helper.get_data(self.token_cache_key)
             if cached_token:
                 self._access_token = cached_token
                 self._token_expiry = time.time() + 3600 # Assume valid for another 1 hour to reduce Redis hits

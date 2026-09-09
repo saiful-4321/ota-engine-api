@@ -6,9 +6,10 @@ FlightController imports everything from here — internal module layout is hidd
 """
 
 from app.helpers.flight.registry import (
-    SUPPLIER_REGISTRY,
+    INTEGRATION_REGISTRY,
     DEFAULT_SUPPLIER,
     resolve_supplier,
+    get_active_flight_suppliers,
 )
 from app.helpers.flight.logger import (
     log_search_request, log_booking, log_ticket, 
@@ -23,12 +24,14 @@ from app.utils.flight import (
     format_cancel_response,
     format_ticketing_response,
     format_fare_rules_response,
+    build_search_filters,
 )
 
 __all__ = [
-    "SUPPLIER_REGISTRY",
+    "INTEGRATION_REGISTRY",
     "DEFAULT_SUPPLIER",
     "resolve_supplier",
+    "get_active_flight_suppliers",
     "log_search_request",
     "log_booking",
     "log_ticket",
@@ -42,4 +45,5 @@ __all__ = [
     "format_cancel_response",
     "format_ticketing_response",
     "format_fare_rules_response",
+    "build_search_filters",
 ]

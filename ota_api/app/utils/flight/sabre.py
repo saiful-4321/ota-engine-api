@@ -74,6 +74,9 @@ def _build_filters(flights: list) -> Dict[str, Any]:
         "refundable": [True, False]
     }
 
+# Public alias so external modules (e.g. FlightController multi-supplier merge) can call it
+build_filters = _build_filters
+
 def _get_airline_name(code: str, airline_descs: Dict[str, str], carrier_data: Dict[str, Any]) -> str:
     """Helper to get airline name from various sources with fallbacks."""
     if not code:
@@ -104,8 +107,42 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         grouped = sabre_response["groupedItineraryResponse"]
-        leg_descs      = {l["id"]: l for l in grouped.get("legDescs", [])}
-        schedule_descs = {s["id"]: s for s in grouped.get("scheduleDescs", [])}
+
+        # ── Early exit: zero results ──────────────────────────────────────────
+        # Sabre returns HTTP 200 with itineraryCount=0 when no flights match.
+        # Parse the messages array and surface the clearest reason to the caller.
+        itin_count = grouped.get("statistics", {}).get("itineraryCount", -1)
+        has_groups = bool(grouped.get("itineraryGroups"))
+
+        if itin_count == 0 or (itin_count == -1 and not has_groups):
+            messages    = grouped.get("messages", [])
+            error_msgs  = [m["text"] for m in messages if m.get("severity") == "Error"]
+            warn_msgs   = [m["text"] for m in messages if m.get("severity") in ("Warning", "Info")
+                           and m.get("type") in ("SCHEDULES", "DEFAULT", "DRE")]
+
+            reason = (
+                error_msgs[0] if error_msgs
+                else warn_msgs[0] if warn_msgs
+                else "No flights found for the requested route and date."
+            )
+
+            return {
+                "status":  "no_results",
+                "message": reason,
+                "metadata": {
+                    "total_results": 0,
+                    "sabre_messages": [
+                        {"severity": m.get("severity"), "type": m.get("type"), "text": m.get("text")}
+                        for m in messages
+                    ]
+                },
+                "filters": {},
+                "flights": []
+            }
+        # ─────────────────────────────────────────────────────────────────────
+
+        leg_descs         = {l["id"]: l for l in grouped.get("legDescs", [])}
+        schedule_descs    = {s["id"]: s for s in grouped.get("scheduleDescs", [])}
         tax_summary_descs = {t["id"]: t for t in grouped.get("taxSummaryDescs", [])}
         
         # Extract airline names from airlineDescs if present
@@ -753,12 +790,47 @@ def format_ticketing_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                         error_details.append(content)
 
         # 3. Formulate a better message
+        cleaned_details = [
+            e.replace("\x87", "").replace("‡", "").strip()
+            for e in error_details
+        ]
+        error_details = [e for e in cleaned_details if e]
+
         if error_details:
-            # If the first error is generic, use the more specific one
-            if "No new tickets have been issued" in error_details[0] and len(error_details) > 1:
-                message = error_details[1]
+            # Check for known Sabre ticketing errors and map to descriptive messages
+            for err in error_details:
+                if "AUTH CARRIER INVLD" in err:
+                    message = (
+                        "Validating carrier is not authorized for ticketing on this PCC "
+                        "(Sabre error: AUTH CARRIER INVLD-0633). The agency lacks Electronic Ticketing Authority (ETA) "
+                        "for this airline. Please verify carrier authorization with Sabre or ticket using an authorized carrier."
+                    )
+                    break
+                elif "PRICE QUOTE EXPIRED" in err:
+                    message = (
+                        "Price quote has expired (Sabre error: PRICE QUOTE EXPIRED). "
+                        "Please re-price or rebook the itinerary before issuing tickets."
+                    )
+                    break
+                elif "SEGMENT NOT VALID FOR ELECTRONIC TRANSACTION" in err:
+                    message = (
+                        "Flight segment is not valid for electronic ticketing transactions."
+                    )
+                    break
+                elif "TKT PRT NOT ASSIGNED" in err:
+                    message = (
+                        "Ticket printer not assigned or invalid printer designation."
+                    )
+                    break
+                elif "UNABLE TO TICKET" in err:
+                    message = err
+                    break
             else:
-                message = error_details[0]
+                # If the first error is generic, use the more specific one
+                if "No new tickets have been issued" in error_details[0] and len(error_details) > 1:
+                    message = error_details[1]
+                else:
+                    message = error_details[0]
 
     # Extract ticket numbers from response
     tickets_data = air_ticket_rs.get("Summary", [])

@@ -1,6 +1,8 @@
 import uuid
 import time
-from typing import Dict, Any
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, List
 
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 from fastapi.responses import JSONResponse
@@ -12,17 +14,21 @@ from app.models.sabre_schemas import (
     RepricePNRRequest,
 )
 from app.helpers.flight import (
-    DEFAULT_SUPPLIER, resolve_supplier, log_search_request,
-    log_booking, log_ticket,
+    DEFAULT_SUPPLIER, resolve_supplier, get_active_flight_suppliers,
+    log_search_request, log_booking, log_ticket,
     format_error_response, format_search_response, format_pricing_response,
     format_pnr_response, format_pnr_details_response, format_cancel_response,
     format_ticketing_response, format_fare_rules_response,
+    build_search_filters,
 )
 from app.helpers.common import get_client_ip, get_optional_user_id
 
 router = APIRouter()
 
-_S = Query(default=DEFAULT_SUPPLIER, description="Supplier key, e.g. 'sabre'")
+_S = Query(
+    default=DEFAULT_SUPPLIER,
+    description="Supplier provider key (e.g. 'sabre') or specific supplier code (e.g. 'SABRE-BD-DAC'). Defaults to active supplier."
+)
 
 
 # ===========================================================================
@@ -32,8 +38,11 @@ _S = Query(default=DEFAULT_SUPPLIER, description="Supplier key, e.g. 'sabre'")
 @router.post(
     "/search",
     summary="Search Flights",
-    description="Supplier-agnostic search. Pass `?supplier=sabre` (default). "
-    "Every search is logged asynchronously to `flight_search_requests_log`."
+    description=(
+        "Supplier-agnostic search. Pass `?supplier=sabre` (default) to fan-out to ALL active suppliers "
+        "and get results merged by price. Pass a specific code like `?supplier=SABRE-BD-DAC` to query "
+        "one supplier only. Every search is logged asynchronously to `flight_search_requests_log`."
+    )
 )
 async def search_flights(
     request: FlightSearchRequest,
@@ -46,18 +55,115 @@ async def search_flights(
     result_count = None
     ip_address   = get_client_ip(http_request)
     user_agent   = http_request.headers.get("user-agent", "")[:500]
-    
+
+    # ── Determine whether to fan-out to ALL suppliers or use one ─────────────
+    # Fan-out when the caller passes the generic provider key (e.g. 'sabre') or
+    # the default alias. A specific supplier code (e.g. 'SABRE-BD-DAC') targets
+    # exactly that supplier.
+    ident           = str(supplier or DEFAULT_SUPPLIER).strip().lower()
+    is_specific_sup = "-" in ident  # e.g. 'sabre-bd-dac' vs 'sabre'
+
     try:
-        # ── Supplier call (timed independently) ──────────────────────────
         t_supplier_start = time.monotonic()
-        raw_response     = resolve_supplier(supplier).search_flights(request)
-        supplier_ms      = int((time.monotonic() - t_supplier_start) * 1000)
 
-        # ── Format response ───────────────────────────────────────────────
-        formatted = format_search_response(supplier, raw_response)
-        api_ms    = int((time.monotonic() - t_start) * 1000)
+        if is_specific_sup:
+            # ── Single-supplier mode ──────────────────────────────────────────
+            svc          = resolve_supplier(supplier)
+            raw_response = svc.search_flights(request)
+            provider     = getattr(svc, "integration_provider", supplier)
+            formatted    = format_search_response(provider, raw_response)
+            supplier_ms  = int((time.monotonic() - t_supplier_start) * 1000)
 
-        # Build timing metadata dict
+            # Tag flights with actual supplier details
+            if formatted and isinstance(formatted.get("flights"), list):
+                for flight in formatted["flights"]:
+                    flight["supplier_code"] = svc.config.supplier_code
+                    flight["supplier"]      = svc.config.supplier_code
+                    flight["supplier_name"] = svc.config.supplier_name
+        else:
+            # ── Multi-supplier fan-out mode ───────────────────────────────────
+            # Load all active suppliers for this integration_provider / service.
+            active_suppliers: Dict[str, Any] = get_active_flight_suppliers(service="flight")
+
+            if not active_suppliers:
+                # Fallback: no active suppliers found — try the generic key
+                svc          = resolve_supplier(supplier)
+                raw_response = svc.search_flights(request)
+                provider     = getattr(svc, "integration_provider", supplier)
+                formatted    = format_search_response(provider, raw_response)
+                supplier_ms  = int((time.monotonic() - t_supplier_start) * 1000)
+
+                # Tag flights with actual supplier details
+                if formatted and isinstance(formatted.get("flights"), list):
+                    for flight in formatted["flights"]:
+                        flight["supplier_code"] = svc.config.supplier_code
+                        flight["supplier"]      = svc.config.supplier_code
+                        flight["supplier_name"] = svc.config.supplier_name
+            else:
+                # Run all supplier calls concurrently in a thread pool
+                loop = asyncio.get_event_loop()
+
+                def _call_supplier(code_svc):
+                    code, svc = code_svc
+                    try:
+                        raw  = svc.search_flights(request)
+                        prov = getattr(svc, "integration_provider", code)
+                        fmt  = format_search_response(prov, raw)
+                        return code, fmt, None
+                    except Exception as exc:
+                        return code, None, str(exc)
+
+                with ThreadPoolExecutor(max_workers=len(active_suppliers)) as pool:
+                    tasks   = list(active_suppliers.items())
+                    results = await loop.run_in_executor(
+                        pool,
+                        lambda: [_call_supplier(t) for t in tasks]
+                    )
+
+                supplier_ms = int((time.monotonic() - t_supplier_start) * 1000)
+
+                # ── Merge all supplier flight lists ───────────────────────────
+                merged_flights: List[Dict[str, Any]] = []
+                supplier_metadata: Dict[str, Any]   = {}
+                errors_by_supplier: Dict[str, str]  = {}
+
+                for code, fmt, err in results:
+                    if err:
+                        errors_by_supplier[code] = err
+                        print(f"[Search] Supplier '{code}' failed: {err}", flush=True)
+                        continue
+                    if fmt and isinstance(fmt.get("flights"), list):
+                        # Tag each flight with its originating supplier details
+                        for flight in fmt["flights"]:
+                            flight["supplier_code"] = code
+                            flight["supplier"]      = code
+                            flight["supplier_name"] = active_suppliers[code].config.supplier_name
+                        merged_flights.extend(fmt["flights"])
+                        supplier_metadata[code] = fmt.get("metadata", {})
+
+                # Sort merged results by numeric price ascending
+                merged_flights.sort(key=lambda f: f.get("numericPrice") or f.get("price", {}).get("total") or 0)
+
+                # Build filters from the full merged flight set
+                merged_filters = build_search_filters(merged_flights)
+
+                # Build unified metadata
+                formatted = {
+                    "status":  "success" if merged_flights else "no_results",
+                    "message": "Flights found" if merged_flights else "No flights found across any supplier.",
+                    "metadata": {
+                        "total_results":       len(merged_flights),
+                        "suppliers_queried":   list(active_suppliers.keys()),
+                        "suppliers_succeeded": [c for c in active_suppliers if c not in errors_by_supplier],
+                        "suppliers_failed":    errors_by_supplier,
+                        "per_supplier":        supplier_metadata,
+                    },
+                    "filters": merged_filters,
+                    "flights": merged_flights,
+                }
+
+        api_ms = int((time.monotonic() - t_start) * 1000)
+
         timing_metadata = {
             "supplier_response_time_ms": supplier_ms,
             "api_response_time_ms":      api_ms,
@@ -65,7 +171,6 @@ async def search_flights(
             "user_agent":                user_agent
         }
 
-        # Extract result count and inject search_id + timing into the response
         if isinstance(formatted, dict):
             result_count = formatted.get("metadata", {}).get("total_results")
             formatted.setdefault("metadata", {})
@@ -124,7 +229,8 @@ async def search_flights(
              description="Verifies live pricing for a given flight itinerary.")
 async def price_flight(request: FlightPricingRequest, supplier: str = _S):
     try:
-        return format_pricing_response(supplier, resolve_supplier(supplier).price_flight(request))
+        sup = getattr(request, "supplier", None) or supplier
+        return format_pricing_response(sup, resolve_supplier(sup).price_flight(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -144,15 +250,16 @@ async def book_flight(
     supplier: str = _S
 ):
     try:
-        response = resolve_supplier(supplier).create_pnr(request)
-        formatted = format_pnr_response(supplier, response)
+        sup = getattr(request, "supplier", None) or supplier
+        response = resolve_supplier(sup).create_pnr(request)
+        formatted = format_pnr_response(sup, response)
         
         # Log successful booking
         background_tasks.add_task(
             log_booking,
             request = request,
             response = response,
-            supplier_code = supplier,
+            supplier_code = sup,
             user_id = get_optional_user_id(http_request)
         )
         
@@ -167,7 +274,8 @@ async def book_flight(
              description="Retrieves full details of an existing booking / PNR.")
 async def pnr_details(request: PNRDetailsRequest, supplier: str = _S):
     try:
-        return format_pnr_details_response(supplier, resolve_supplier(supplier).get_pnr_details(request))
+        sup = getattr(request, "supplier", None) or supplier
+        return format_pnr_details_response(sup, resolve_supplier(sup).get_pnr_details(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -178,7 +286,8 @@ async def pnr_details(request: PNRDetailsRequest, supplier: str = _S):
              description="Cancels an existing itinerary / PNR.")
 async def pnr_cancel(request: CancelItineraryRequest, supplier: str = _S):
     try:
-        return format_cancel_response(supplier, resolve_supplier(supplier).cancel_itinerary(request))
+        sup = getattr(request, "supplier", None) or supplier
+        return format_cancel_response(sup, resolve_supplier(sup).cancel_itinerary(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -196,9 +305,11 @@ async def pnr_cancel(request: CancelItineraryRequest, supplier: str = _S):
 )
 async def pnr_reprice(request: RepricePNRRequest, supplier: str = _S):
     try:
-        result = resolve_supplier(supplier).reprice_pnr(
+        sup = getattr(request, "supplier", None) or supplier
+        result = resolve_supplier(sup).reprice_pnr(
             pnr=request.pnr,
             passenger_types=request.passenger_types,
+            validating_carrier=getattr(request, "validating_carrier", None),
         )
         return {
             "status": "success",
@@ -216,7 +327,8 @@ async def pnr_reprice(request: RepricePNRRequest, supplier: str = _S):
              description="Places a PNR on a specific agency queue.")
 async def queue_place(request: QueueRequest, supplier: str = _S):
     try:
-        return resolve_supplier(supplier).place_in_queue(request)
+        sup = getattr(request, "supplier", None) or supplier
+        return resolve_supplier(sup).place_in_queue(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -236,8 +348,9 @@ async def ticket_issue(
     supplier: str = _S
 ):
     try:
-        response = resolve_supplier(supplier).issue_ticket(request)
-        formatted = format_ticketing_response(supplier, response)
+        sup = getattr(request, "supplier", None) or supplier
+        response = resolve_supplier(sup).issue_ticket(request)
+        formatted = format_ticketing_response(sup, response)
         
         # Log ticket issuance as a background task to prevent blocking or failing the API response
         # if the database transaction encounters an error after the supplier has already issued the ticket.
@@ -245,7 +358,7 @@ async def ticket_issue(
             log_ticket,
             request = request,
             response = response,
-            supplier_code = supplier,
+            supplier_code = sup,
             user_id = get_optional_user_id(http_request)
         )
         
@@ -260,7 +373,8 @@ async def ticket_issue(
              description="Voids a previously issued electronic ticket (typically within 24 hours).")
 async def ticket_void(request: VoidTicketRequest, supplier: str = _S):
     try:
-        return resolve_supplier(supplier).void_ticket(request)
+        sup = getattr(request, "supplier", None) or supplier
+        return resolve_supplier(sup).void_ticket(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -271,7 +385,8 @@ async def ticket_void(request: VoidTicketRequest, supplier: str = _S):
              description="Performs an automated exchange / reissue of an existing ticket.")
 async def ticket_exchange(request: ExchangeTicketRequest, supplier: str = _S):
     try:
-        return resolve_supplier(supplier).exchange_ticket(request)
+        sup = getattr(request, "supplier", None) or supplier
+        return resolve_supplier(sup).exchange_ticket(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -286,7 +401,8 @@ async def ticket_exchange(request: ExchangeTicketRequest, supplier: str = _S):
              description="Retrieves available seats for a specific flight segment.")
 async def seat_map(request: SeatMapRequest, supplier: str = _S):
     try:
-        return resolve_supplier(supplier).get_seat_maps(request)
+        sup = getattr(request, "supplier", None) or supplier
+        return resolve_supplier(sup).get_seat_maps(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -300,7 +416,8 @@ async def seat_map(request: SeatMapRequest, supplier: str = _S):
 )
 async def baggage_allowance(request: BaggageAllowanceRequest, supplier: str = _S):
     try:
-        return resolve_supplier(supplier).get_baggage_allowance(request)
+        sup = getattr(request, "supplier", None) or supplier
+        return resolve_supplier(sup).get_baggage_allowance(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
@@ -314,7 +431,8 @@ async def baggage_allowance(request: BaggageAllowanceRequest, supplier: str = _S
 )
 async def fare_rules(request: FareRulesRequest, supplier: str = _S):
     try:
-        return format_fare_rules_response(supplier, resolve_supplier(supplier).get_fare_rules(request))
+        sup = getattr(request, "supplier", None) or supplier
+        return format_fare_rules_response(sup, resolve_supplier(sup).get_fare_rules(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:

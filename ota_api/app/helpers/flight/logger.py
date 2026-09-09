@@ -1164,8 +1164,10 @@ def _extract_ticketing_errors(app_results: Dict) -> List[str]:
             for sys_res in item.get("SystemSpecificResults", []):
                 for msg in sys_res.get("Message", []):
                     content = msg.get("content") or msg.get("value")
-                    if content and content not in error_details:
-                        error_details.append(content)
+                    if content:
+                        clean_content = content.replace("\x87", "").replace("‡", "").strip()
+                        if clean_content and clean_content not in error_details:
+                            error_details.append(clean_content)
     return error_details
 
 

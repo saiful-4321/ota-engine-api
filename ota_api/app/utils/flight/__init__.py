@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from app.utils.flight import sabre
 # from app.utils.flight import amadeus   # ← future
@@ -15,18 +15,24 @@ def format_error_response(error: Exception) -> Dict[str, Any]:
 # Search
 # ---------------------------------------------------------------------------
 def format_search_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if supplier == "sabre":
+    key = str(supplier or "").lower()
+    if "sabre" in key:
         return sabre.format_bfm_response(response)
-    # elif supplier == "amadeus":
+    # elif "amadeus" in key:
     #     return amadeus.format_search_response(response)
     return response
+
+
+def build_search_filters(flights: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return sabre.build_filters(flights)
 
 
 # ---------------------------------------------------------------------------
 # Pricing
 # ---------------------------------------------------------------------------
 def format_pricing_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if supplier == "sabre":
+    key = str(supplier or "").lower()
+    if "sabre" in key:
         return sabre.format_pricing_response(response)
     return response
 
@@ -35,19 +41,22 @@ def format_pricing_response(supplier: str, response: Dict[str, Any]) -> Dict[str
 # PNR / AtBooking
 # ---------------------------------------------------------------------------
 def format_pnr_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if supplier == "sabre":
+    key = str(supplier or "").lower()
+    if "sabre" in key:
         return sabre.format_pnr_response(response)
     return response
 
 
 def format_pnr_details_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if supplier == "sabre":
+    key = str(supplier or "").lower()
+    if "sabre" in key:
         return sabre.format_pnr_details_response(response)
     return response
 
 
 def format_cancel_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if supplier == "sabre":
+    key = str(supplier or "").lower()
+    if "sabre" in key:
         return sabre.format_cancel_response(response)
     return response
 
@@ -56,7 +65,8 @@ def format_cancel_response(supplier: str, response: Dict[str, Any]) -> Dict[str,
 # Ticketing
 # ---------------------------------------------------------------------------
 def format_ticketing_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if supplier == "sabre":
+    key = str(supplier or "").lower()
+    if "sabre" in key:
         return sabre.format_ticketing_response(response)
     return response
 
@@ -65,6 +75,8 @@ def format_ticketing_response(supplier: str, response: Dict[str, Any]) -> Dict[s
 # Fare Rules
 # ---------------------------------------------------------------------------
 def format_fare_rules_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if supplier == "sabre":
+    key = str(supplier or "").lower()
+    if "sabre" in key:
         return sabre.format_fare_rules_response(response)
     return response
+

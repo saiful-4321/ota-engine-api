@@ -60,6 +60,7 @@ class FlightPricingRequest(BaseModel):
     flight_segments: List[Dict[str, Any]] = Field(..., description="List of flight segments from search response")
     passengers: List[PricingRequestPassenger] = Field(..., description="List of passenger counts and types")
     currency: Optional[str] = Field("BDT", description="Currency code for revalidation (e.g., USD, BDT)")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class AtBookingPassenger(BaseModel):
     first_name: str
@@ -89,6 +90,7 @@ class FlightBookingRequest(BaseModel):
         )
     )
     validating_carrier: Optional[str] = Field(None, description="Optional airline code to use as validating carrier for pricing")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class TicketingRequest(BaseModel):
     pnr: str = Field(..., description="Passenger Name Record (PNR) locator to ticket")
@@ -99,6 +101,7 @@ class TicketingRequest(BaseModel):
     commission_percent: Optional[float] = Field(7, description="Commission percentage to apply on ticketing")
     reissue: Optional[bool] = Field(False, description="Whether this is a reissue ticketing")
     quote_number: Optional[int] = Field(1, description="Price quote record number to use for ticketing (defaults to 1, use the number returned by reprice)")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class RepricePNRRequest(BaseModel):
     pnr: str = Field(..., description="Passenger Name Record (PNR) locator to reprice")
@@ -106,35 +109,46 @@ class RepricePNRRequest(BaseModel):
         None,
         description="Passenger type counts e.g. [{\"Code\": \"ADT\", \"Quantity\": \"1\"}]. Defaults to 1 adult."
     )
+    validating_carrier: Optional[str] = Field(None, description="Optional airline code to force as validating carrier during repricing")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 
 class PNRDetailsRequest(BaseModel):
     pnr: str = Field(..., description="Passenger Name Record (PNR) locator to retrieve details for")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class CancelItineraryRequest(BaseModel):
     pnr: str = Field(..., description="Passenger Name Record (PNR) locator to cancel")
     cancel_segments: Optional[bool] = Field(True, description="Cancel all flight segments")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
     
 class VoidTicketRequest(BaseModel):
     ticket_number: str = Field(..., description="The electronic ticket number to void")
     pnr: str = Field(..., description="The associated PNR")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class ExchangeTicketRequest(BaseModel):
     pnr: str = Field(..., description="The PNR containing the ticket to be exchanged")
     original_ticket_number: str = Field(..., description="The ticket number being exchanged")
     new_flight_segments: List[Dict[str, Any]] = Field(..., description="The new flight segments")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
+
 class SeatMapRequest(BaseModel):
     pnr: Optional[str] = Field(None, description="PNR locator if a booking exists")
     flight_segment: Dict[str, Any] = Field(..., description="Flight segment to retrieve seats for")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class BaggageAllowanceRequest(BaseModel):
     pnr: str = Field(..., description="PNR locator")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class QueueRequest(BaseModel):
     pnr: str = Field(..., description="PNR locator")
     pseudo_city_code: str = Field(..., description="Agency PCC")
     queue_number: str = Field(..., description="Queue number to place the PNR on")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class FareRulesRequest(BaseModel):
     flight_segment: Dict[str, Any] = Field(..., description="Flight segment to check rules for")
+    supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
