@@ -1,7 +1,7 @@
 import datetime
 import os
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 # Load airline names from data file
 AIRLINE_NAMES = {}
@@ -12,7 +12,6 @@ try:
     if os.path.exists(data_path):
         with open(data_path, "r") as f:
             AIRLINE_NAMES = json.load(f)
-            # print(f"DEBUG: Loaded {len(AIRLINE_NAMES)} airline names from {data_path}")
     else:
         print(f"WARNING: Airline data file not found at {data_path}")
 except Exception as e:
@@ -63,6 +62,9 @@ def _build_filters(flights: list) -> Dict[str, Any]:
             "logo": logo
         })
 
+    fare_types = sorted(list({f.get("fareType") or f.get("fare_type") or "GDS" for f in flights}))
+    has_ndc = any(f.get("isNdc") or f.get("is_ndc") for f in flights)
+
     return {
         "airlines": formatted_airlines,
         "stops": sorted(list(stops_set)),
@@ -71,7 +73,9 @@ def _build_filters(flights: list) -> Dict[str, Any]:
             "max": max(prices) if prices else 0
         },
         "cabinClasses": ["Y", "S", "C", "J", "F"],
-        "refundable": [True, False]
+        "refundable": [True, False],
+        "fareTypes": fare_types,
+        "hasNdc": has_ndc
     }
 
 # Public alias so external modules (e.g. FlightController multi-supplier merge) can call it
@@ -157,7 +161,7 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
             dep_date_str = group_key.get("departureDate", "")
 
             for itin in group.get("itineraries", []):
-                # ── Pricing ──────────────────────────────────────────────
+                # ── Pricing & NDC Detection ──────────────────────────────
                 pricing_info = itin.get("pricingInformation", [])
                 total_price_num = 0
                 total_price_str = "$0"
@@ -170,6 +174,21 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                 seats_remaining = None
                 fare_components = []
                 baggage_info    = []
+
+                is_ndc = False
+                itin_source = str(itin.get("source") or itin.get("providerCode") or "").upper()
+                if "NDC" in itin_source:
+                    is_ndc = True
+
+                for pi in pricing_info:
+                    sub_source = str(pi.get("pricingSubSource") or "").upper()
+                    fare_src = str(pi.get("fareSource") or "").upper()
+                    fare_obj = pi.get("fare", {})
+                    f_type = str(fare_obj.get("fareType") or "").upper()
+                    gov_carrier = str(fare_obj.get("governingCarriers") or "").upper()
+                    if "NDC" in sub_source or "NDC" in fare_src or "NDC" in f_type or "NDC" in gov_carrier:
+                        is_ndc = True
+                        break
 
                 if pricing_info:
                     fare       = pricing_info[0].get("fare", {})
@@ -482,6 +501,15 @@ def format_bfm_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
                     "baggageSummary": baggage_summary,
                     "seatsRemaining": seats_remaining,
                     "validatingCarrier": validating_carrier,
+                    "apiProvider": "Sabre",
+                    "api_provider": "sabre",
+                    "pcc": "N3SL",
+                    "isNdc":          is_ndc,
+                    "is_ndc":         is_ndc,
+                    "fareType":       "NDC" if is_ndc else "GDS",
+                    "fare_type":      "NDC" if is_ndc else "GDS",
+                    "tags":           ["NDC"] if is_ndc else [],
+                    "contentSource":  "NDC" if is_ndc else "GDS",
                     "legs":           legs_out
                 }
                 formatted_flights.append(formatted_flight)
@@ -893,8 +921,6 @@ def format_pricing_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
     formatted_offers = []
     
     for offer in offers:
-        total_price = offer.get("totalPrice", {})
-        
         # Get fare breakdown from the first item/fare
         fare_details = {}
         items = offer.get("items", [])

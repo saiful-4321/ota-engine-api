@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from app.utils.flight import sabre
+from app.utils.flight import sabre, travelport
 # from app.utils.flight import amadeus   # ← future
 
 
@@ -18,6 +18,8 @@ def format_search_response(supplier: str, response: Dict[str, Any]) -> Dict[str,
     key = str(supplier or "").lower()
     if "sabre" in key:
         return sabre.format_bfm_response(response)
+    elif "travelport" in key or "gal" in key or (isinstance(response, dict) and "CatalogProductOfferingsResponse" in response):
+        return travelport.format_catalog_search_response(response)
     # elif "amadeus" in key:
     #     return amadeus.format_search_response(response)
     return response

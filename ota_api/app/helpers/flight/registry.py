@@ -21,13 +21,13 @@ from typing import Any, Dict, List
 from app.services.sabre_service import SabreFlightService
 from app.services.supplier_config_service import SupplierConfigService, SupplierConfig
 # from app.services.amadeus_service import AmadeusFlightService    # ← future
-# from app.services.travelport_service import TravelportFlightService  # ← future
+from app.services.travelport_service import TravelportFlightService
 
 # Maps `integration_provider` value → service class
 INTEGRATION_REGISTRY: Dict[str, Any] = {
     "sabre":      SabreFlightService,
     # "amadeus":    AmadeusFlightService,
-    # "travelport": TravelportFlightService,
+    "travelport": TravelportFlightService,
     # "flyhub":     FlyhubFlightService,
 }
 

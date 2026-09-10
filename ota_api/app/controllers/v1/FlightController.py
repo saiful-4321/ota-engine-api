@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 from fastapi import APIRouter, BackgroundTasks, Query, Request
 from fastapi.responses import JSONResponse
 
-from app.models.sabre_schemas import (
+from app.models.flight_schemas import (
     FlightSearchRequest, FlightPricingRequest, FlightBookingRequest, TicketingRequest,
     PNRDetailsRequest, CancelItineraryRequest, VoidTicketRequest, ExchangeTicketRequest,
     SeatMapRequest, BaggageAllowanceRequest, QueueRequest, FareRulesRequest,
@@ -29,6 +29,46 @@ _S = Query(
     default=DEFAULT_SUPPLIER,
     description="Supplier provider key (e.g. 'sabre') or specific supplier code (e.g. 'SABRE-BD-DAC'). Defaults to active supplier."
 )
+
+
+def _get_provider_title(integration_provider: str) -> str:
+    prov = str(integration_provider or "").lower()
+    if "travelport" in prov or "galileo" in prov:
+        return "Travelport"
+    elif "sabre" in prov:
+        return "Sabre"
+    elif "amadeus" in prov:
+        return "Amadeus"
+    return integration_provider.title() if integration_provider else "Sabre"
+
+
+def _tag_flight_with_supplier(flight: Dict[str, Any], sup_cfg: Any) -> None:
+    """Enriches each flight dictionary with supplier metadata and NDC tags."""
+    prov_title = _get_provider_title(sup_cfg.integration_provider)
+    flight["supplier_code"] = sup_cfg.supplier_code
+    flight["supplier"]      = sup_cfg.supplier_code
+    flight["supplier_name"] = sup_cfg.supplier_name
+    flight["apiProvider"]   = prov_title
+    flight["api_provider"]  = sup_cfg.integration_provider
+    flight["pcc"]           = sup_cfg.pcc
+
+    # Determine NDC fare: from provider payload OR supplier configuration
+    sup_type = str(getattr(sup_cfg, "supplier_type", "") or "").upper()
+    sup_code = str(getattr(sup_cfg, "supplier_code", "") or "").lower()
+    sup_name = str(getattr(sup_cfg, "supplier_name", "") or "").lower()
+    is_ndc_supplier = (sup_type == "NDC" or "ndc" in sup_code or "ndc" in sup_name)
+
+    is_ndc = bool(flight.get("isNdc") or flight.get("is_ndc") or is_ndc_supplier)
+    flight["isNdc"]          = is_ndc
+    flight["is_ndc"]         = is_ndc
+    flight["fareType"]       = "NDC" if is_ndc else flight.get("fareType", "GDS")
+    flight["fare_type"]      = flight["fareType"]
+    flight["contentSource"]  = "NDC" if is_ndc else flight.get("contentSource", "GDS")
+
+    tags = list(flight.get("tags") or [])
+    if is_ndc and "NDC" not in tags:
+        tags.append("NDC")
+    flight["tags"] = tags
 
 
 # ===========================================================================
@@ -74,12 +114,12 @@ async def search_flights(
             formatted    = format_search_response(provider, raw_response)
             supplier_ms  = int((time.monotonic() - t_supplier_start) * 1000)
 
-            # Tag flights with actual supplier details
+            # Tag flights with actual supplier details and NDC markers
             if formatted and isinstance(formatted.get("flights"), list):
+                sup_cfg = svc.config
                 for flight in formatted["flights"]:
-                    flight["supplier_code"] = svc.config.supplier_code
-                    flight["supplier"]      = svc.config.supplier_code
-                    flight["supplier_name"] = svc.config.supplier_name
+                    _tag_flight_with_supplier(flight, sup_cfg)
+                formatted["filters"] = build_search_filters(formatted["flights"])
         else:
             # ── Multi-supplier fan-out mode ───────────────────────────────────
             # Load all active suppliers for this integration_provider / service.
@@ -93,12 +133,12 @@ async def search_flights(
                 formatted    = format_search_response(provider, raw_response)
                 supplier_ms  = int((time.monotonic() - t_supplier_start) * 1000)
 
-                # Tag flights with actual supplier details
+                # Tag flights with actual supplier details and NDC markers
                 if formatted and isinstance(formatted.get("flights"), list):
+                    sup_cfg = svc.config
                     for flight in formatted["flights"]:
-                        flight["supplier_code"] = svc.config.supplier_code
-                        flight["supplier"]      = svc.config.supplier_code
-                        flight["supplier_name"] = svc.config.supplier_name
+                        _tag_flight_with_supplier(flight, sup_cfg)
+                    formatted["filters"] = build_search_filters(formatted["flights"])
             else:
                 # Run all supplier calls concurrently in a thread pool
                 loop = asyncio.get_event_loop()
@@ -133,11 +173,10 @@ async def search_flights(
                         print(f"[Search] Supplier '{code}' failed: {err}", flush=True)
                         continue
                     if fmt and isinstance(fmt.get("flights"), list):
-                        # Tag each flight with its originating supplier details
+                        sup_cfg = active_suppliers[code].config
+                        # Tag each flight with its originating supplier details and NDC markers
                         for flight in fmt["flights"]:
-                            flight["supplier_code"] = code
-                            flight["supplier"]      = code
-                            flight["supplier_name"] = active_suppliers[code].config.supplier_name
+                            _tag_flight_with_supplier(flight, sup_cfg)
                         merged_flights.extend(fmt["flights"])
                         supplier_metadata[code] = fmt.get("metadata", {})
 
@@ -320,7 +359,6 @@ async def pnr_reprice(request: RepricePNRRequest, supplier: str = _S):
         return JSONResponse(status_code=400, content=format_error_response(ve))
     except Exception as e:
         return JSONResponse(status_code=400, content=format_error_response(e))
-
 
 
 @router.post("/pnr/queue", summary="Place PNR on Queue",

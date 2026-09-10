@@ -2,7 +2,7 @@ import json
 import re
 import requests
 from app.services.sabre_auth_service import SabreBaseService
-from app.models.sabre_schemas import (
+from app.models.flight_schemas import (
     FlightSearchRequest, FlightPricingRequest, FlightBookingRequest, TicketingRequest,
     PNRDetailsRequest, CancelItineraryRequest, VoidTicketRequest, ExchangeTicketRequest,
     SeatMapRequest, BaggageAllowanceRequest, QueueRequest, FareRulesRequest
@@ -540,8 +540,6 @@ class SabreFlightService(SabreBaseService):
         url = f"{self.base_url}{SabreEndpoints.FLIGHT_CHECK}"
         headers = self.get_headers()
         
-        print(f"[PRICE_DEBUG] Incoming pricing_params: {pricing_params.dict()}", flush=True)
-
         # Extract and format journeys/flights for Flight Check API v1 (Strict Schema)
         flights = []
         last_mktg = ""
@@ -550,7 +548,6 @@ class SabreFlightService(SabreBaseService):
             mktg = p["marketing_airline"] or last_mktg
             if mktg:
                 last_mktg = mktg
-            print(f"[PRICE_DEBUG] Input segment: {segment} -> Parsed: {p} (mktg: {mktg})", flush=True)
             flight_obj = {
                 "departureDate": p["departure_date"],
                 "departureTime": p["departure_time"],
@@ -1336,17 +1333,17 @@ class SabreFlightService(SabreBaseService):
             ],
             "travelers": [
                 {
-                    "passengerTypeCode": segment.get("passenger_type") or segment.get("passengerTypeCode") or "ADT"
+                    "passengerTypeCode": rules_params.flight_segment.get("passenger_type") or rules_params.flight_segment.get("passengerTypeCode") or "ADT"
                 }
             ],
             "fareRulesRequest": {
-                "fareBasisCode": segment.get("fare_basis_code") or segment.get("fareBasisCode"),
-                "marketingAirlineCode": airline_code,
-                "flightNumber": flight_number,
-                "bookingClass": booking_class,
-                "departureDate": departure_date,
-                "origin": origin_code,
-                "destination": dest_code
+                "fareBasisCode": rules_params.flight_segment.get("fare_basis_code") or rules_params.flight_segment.get("fareBasisCode"),
+                "marketingAirlineCode": p["marketing_airline"],
+                "flightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
+                "bookingClass": p["booking_class"],
+                "departureDate": p["departure_date"],
+                "origin": p["origin"],
+                "destination": p["destination"]
             }
         }
 

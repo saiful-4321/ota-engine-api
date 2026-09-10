@@ -4,7 +4,9 @@ from decimal import Decimal
 from typing import Optional, Dict, Any, List
 from sqlalchemy import text
 
-from app.models.sabre_schemas import FlightSearchRequest, FlightBookingRequest, TicketingRequest
+from app.models.flight_schemas import (
+    FlightSearchRequest, FlightBookingRequest, TicketingRequest
+)
 from app.models.otadb.SearchRequest import SearchRequest
 from app.models.otadb.AtBooking import AtBooking
 from app.models.otadb.AtBookingJourney import AtBookingJourney
