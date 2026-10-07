@@ -53,3 +53,4 @@ class Supplier(OtaDbBase):
     # Relationships
     configuration        = relationship("SupplierConfiguration", back_populates="supplier", uselist=False, cascade="all, delete-orphan")
     service_links        = relationship("SupplierServiceLink", back_populates="supplier", cascade="all, delete-orphan")
+    api_tokens           = relationship("SupplierApiToken", back_populates="supplier", cascade="all, delete-orphan")

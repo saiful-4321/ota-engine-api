@@ -418,6 +418,22 @@ def log_booking(
         supplier_id = supplier.id if supplier else None
 
         # ── 2. Find PNR in response ──────────────────────────────────────
+        # Early-exit: detect GDS-level error responses before PNR search
+        gds_errors = (
+            response.get("ReservationResponse", {})
+                    .get("Result", {})
+                    .get("Error", [])
+        )
+        if gds_errors:
+            error_msgs = "; ".join(
+                e.get("Message", "") for e in gds_errors if isinstance(e, dict)
+            )
+            write_log(
+                f"Booking not logged — GDS returned error(s): {error_msgs}",
+                source="flight.logger.log_booking", type="warning"
+            )
+            return
+
         pnr = _find_pnr(response)
         if not pnr:
             write_log(f"Could not find PNR in response: {response}",
@@ -614,7 +630,7 @@ def log_booking(
         snapshot = AtPricingSnapshot(
             booking_id      = booking.id,
             operation       = 'BOOK',
-            source          = 'SABRE',  # or fallback to general 'SYSTEM' if supplier_code not known
+            source          = supplier_code.split('-')[0].upper() if supplier_code else 'SYSTEM',
             supplier_id     = supplier_id,
             created_by      = str(user_id) if user_id else 'SYSTEM',
             status          = 'ACTIVE',
@@ -928,7 +944,7 @@ def log_ticket(
             new_snapshot = AtPricingSnapshot(
                 booking_id       = booking.id,
                 operation        = 'TICKET',
-                source           = 'SABRE',
+                source           = supplier_code.split('-')[0].upper() if supplier_code else 'SYSTEM',
                 supplier_id      = supplier_id,
                 created_by       = str(user_id) if user_id else 'SYSTEM',
                 status           = 'ACTIVE',

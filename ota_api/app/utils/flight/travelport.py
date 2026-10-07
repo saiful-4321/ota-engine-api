@@ -87,8 +87,18 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
 
     formatted_flights = []
 
-    for off in offerings:
-        offer_id = off.get("id", "")
+    trace_id = travelport_response.get("_trace_id", "")
+    root = travelport_response.get("CatalogProductOfferingsResponse", {})
+    transaction_id = root.get("transactionId", "")
+
+    for idx, off in enumerate(offerings):
+        raw_offer_id = off.get("id", f"cpo_{idx}")
+        if trace_id and transaction_id:
+            offer_id = f"{raw_offer_id}@@{trace_id}@@{transaction_id}"
+        elif trace_id:
+            offer_id = f"{raw_offer_id}@@{trace_id}"
+        else:
+            offer_id = raw_offer_id
         options = off.get("ProductBrandOptions", [])
 
         for opt in options:

@@ -13,10 +13,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./ota_api:/app
-      # - /home/qadmin/uftcl_dev/broker/app/static/uploads/limit_files:/app/protected/static/uploads/limit_files
-      # - /home/qadmin/uftcl_dev/broker/app/static/uploads/it_files:/app/protected/static/uploads/it_files
-      # networks:
-      #   - quantbd_app-network # Connect ota_api
     environment:
       - APP_NAME=OTA API
       - APP_ENV=LOCAL
@@ -25,6 +21,26 @@ services:
     depends_on:
       - ota_redis
       - ota_mqtt
+
+  ota_websocket:
+    container_name: ota_websocket
+    build: ./websocket_service
+    ports:
+      - "6001:6001"
+    restart: unless-stopped
+    environment:
+      - PORT=6001
+      - API_KEY=ota_ws_secret_key_2026
+      - CORS_ORIGIN=*
+      - REDIS_ENABLED=true
+      - REDIS_HOST=ota_redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=devpassword
+      - REDIS_CHANNEL=ota-broadcast
+    depends_on:
+      - ota_redis
+    networks:
+      - default
 
   ota_redis:
     image: redis:alpine

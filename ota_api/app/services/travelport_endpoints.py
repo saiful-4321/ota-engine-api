@@ -10,11 +10,13 @@ class TravelportEndpoints:
     ANCILLARY_SHOP = "/air/catalog/search/ancillaryofferings"
     
     # Workbench / Booking
-    WORKBENCH_CREATE = "/air/book/airoffer/reservationworkbench"
-    WORKBENCH_OFFERS = "/air/book/airoffer/reservationworkbench/{id}/offers/build"
+    WORKBENCH_CREATE = "/air/book/session/reservationworkbench"
+    WORKBENCH_OFFERS = "/air/book/airoffer/reservationworkbench/{id}/offers/buildfromcatalogproductofferings"
     WORKBENCH_TRAVELERS = "/air/book/traveler/reservationworkbench/{id}/travelers"
+    WORKBENCH_TRAVEL_AGENCY = "/air/ticket/travelagency/reservationworkbench/{id}/travelagency"
     WORKBENCH_REMARKS = "/air/book/remarks/reservationworkbench/{id}/reservationcomments/list"
-    WORKBENCH_COMMIT = "/air/book/airoffer/reservationworkbench/{id}/commit"
+    WORKBENCH_COMMIT = "/air/book/reservation/reservations/{id}"
+    WORKBENCH_IGNORE = "/air/book/session/reservationworkbench/{id}"
     
     # Seats and Post-Booking
     SEAT_BOOK = "/air/book/airoffer/reservationworkbench/{id}/offers/buildseatoffers"

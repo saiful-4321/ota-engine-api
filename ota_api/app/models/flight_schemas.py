@@ -57,6 +57,7 @@ class PricingRequestPassenger(BaseModel):
     quantity: int = Field(..., description="Number of passengers of this type")
 
 class FlightPricingRequest(BaseModel):
+    offer_id: Optional[str] = Field(None, description="The unique offer identifier returned from search (required for Travelport)")
     flight_segments: List[Dict[str, Any]] = Field(..., description="List of flight segments from search response")
     passengers: List[PricingRequestPassenger] = Field(..., description="List of passenger counts and types")
     currency: Optional[str] = Field("BDT", description="Currency code for revalidation (e.g., USD, BDT)")
@@ -76,6 +77,7 @@ class AtBookingPassenger(BaseModel):
     nationality: Optional[str] = None # Country code
 
 class FlightBookingRequest(BaseModel):
+    offer_id: Optional[str] = Field(None, description="The unique offer identifier returned from search (required for Travelport)")
     flight_segments: List[Dict[str, Any]] = Field(..., description="Flight segments to book")
     passengers: List[AtBookingPassenger] = Field(..., description="Passenger details for the booking")
     price_info: Dict[str, Any] = Field(

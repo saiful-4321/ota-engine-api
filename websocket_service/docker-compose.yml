@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  ota_websocket:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ota_websocket_service
+    restart: unless-stopped
+    ports:
+      - "${PORT:-6001}:6001"
+    environment:
+      - PORT=6001
+      - API_KEY=${API_KEY:-ota_ws_secret_key_2026}
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      - REDIS_ENABLED=${REDIS_ENABLED:-true}
+      - REDIS_HOST=${REDIS_HOST:-host.docker.internal}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_CHANNEL=${REDIS_CHANNEL:-ota-broadcast}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

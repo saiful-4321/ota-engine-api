@@ -1,9 +1,10 @@
 import datetime
 from typing import Optional, Dict, Any
 
-from app.services.travelport_auth_service import TravelportBaseService
+from app.services.travelport_auth_service import TravelportBaseService, create_http_session
 from app.services.travelport_endpoints import TravelportEndpoints
 from app.services.supplier_config_service import SupplierConfig
+from app.utils.redis_utils import redis_helper
 from app.models.flight_schemas import (
     FlightSearchRequest, FlightPricingRequest, FlightBookingRequest,
     TicketingRequest, PNRDetailsRequest, CancelItineraryRequest,
@@ -190,7 +191,8 @@ class TravelportFlightService(TravelportBaseService):
                 })
 
         modifiers: Dict[str, Any] = {
-            "@type": "SearchModifiersAir"
+            "@type": "SearchModifiersAir",
+            "offersPerPage": 20
         }
 
         # Cabin preference
@@ -240,7 +242,12 @@ class TravelportFlightService(TravelportBaseService):
         }
 
         try:
-            return self.request("POST", TravelportEndpoints.CATALOG_SEARCH, json=payload)
+            import uuid
+            trace_id = str(uuid.uuid4())
+            res = self.request("POST", TravelportEndpoints.CATALOG_SEARCH, json=payload, custom_headers={"TraceId": trace_id})
+            if isinstance(res, dict):
+                res["_trace_id"] = trace_id
+            return res
         except Exception as e:
             raise Exception(f"Flight search failed. {str(e)}")
 
@@ -259,8 +266,9 @@ class TravelportFlightService(TravelportBaseService):
         }
         
         # NOTE: Travelport pricing needs the offer ID from search.
-        # Here we extract offer IDs from flight_segments (if they were stored).
-        offer_id = pricing_params.flight_segments[0].get("offer_id") if pricing_params.flight_segments else None
+        offer_id = pricing_params.offer_id
+        if not offer_id and pricing_params.flight_segments:
+            offer_id = pricing_params.flight_segments[0].get("offer_id")
         
         if offer_id:
             payload["CatalogProductOfferingsPriceRequest"]["CatalogProductOfferingsPriceRequest"]["offers"].append({"Identifier": {"id": offer_id}})
@@ -271,73 +279,273 @@ class TravelportFlightService(TravelportBaseService):
             raise Exception(f"Flight pricing revalidation failed. {str(e)}")
 
 
+    def _purge_stale_workbench(self, wb_res: dict) -> None:
+        """
+        If a WORKBENCH_CREATE response contains a 4350 / 'COMMIT OR IGNORE' error,
+        attempt to clear the stale workbench so the next create call can succeed.
+        The existing workbench ID may be embedded in the error SourceRef field;
+        if not found, we attempt a session-level ignore without an ID.
+        """
+        errors = (
+            wb_res.get("ReservationResponse", {})
+                  .get("Result", {})
+                  .get("Error", [])
+        )
+        is_4350 = any(
+            isinstance(e, dict) and e.get("SourceCode") == "4350"
+            for e in errors
+        )
+        if not is_4350:
+            return
+
+        # Try to extract a stale workbench ID from the error SourceRef
+        stale_id = None
+        for e in errors:
+            if isinstance(e, dict):
+                stale_id = e.get("SourceRef") or e.get("sourceRef") or None
+                if stale_id:
+                    break
+
+        try:
+            if stale_id:
+                self.request("DELETE", TravelportEndpoints.WORKBENCH_IGNORE.format(id=stale_id))
+            else:
+                # No ID available — attempt session-level purge (no-ID DELETE)
+                self.request("DELETE", TravelportEndpoints.WORKBENCH_CREATE)
+        except Exception:
+            pass  # Best-effort; ignore cleanup errors
+
     def create_pnr(self, booking_params: FlightBookingRequest) -> dict:
+        offer_id = booking_params.offer_id
+        if not offer_id and booking_params.flight_segments:
+            seg = booking_params.flight_segments[0]
+            offer_id = seg.get("offer_id") or seg.get("offerId") or seg.get("id")
+
+        custom_headers = {}
+        transaction_id = None
+        if offer_id and "@@" in offer_id:
+            parts = offer_id.split("@@")
+            offer_id = parts[0]  # clean ID e.g. "o8"
+            booking_params.offer_id = offer_id
+            
+            trace_id = parts[1]
+            custom_headers = {"TraceId": trace_id}
+            
+            if len(parts) > 2:
+                transaction_id = parts[2]
+
         # Workbench orchestrated flow
-        # 1. Create Workbench
+        # 1. Create Workbench — with stale-workbench recovery
         workbench_payload = {
-            "ReservationWorkbenchBuildRequest": {
-                "ReservationWorkbenchBuildRequest": {}
-            }
+            "ReservationID": {}
         }
-        wb_res = self.request("POST", TravelportEndpoints.WORKBENCH_CREATE, json=workbench_payload)
-        wb_id = wb_res.get("ReservationWorkbenchBuildResponse", {}).get("ReservationWorkbench", {}).get("Identifier", {}).get("id")
-        
+        wb_res = self.request("POST", TravelportEndpoints.WORKBENCH_CREATE, json=workbench_payload, custom_headers=custom_headers)
+
+        # If the create itself returned a 4350, purge the stale workbench and retry once
+        create_errors = (
+            wb_res.get("ReservationResponse", {})
+                  .get("Result", {})
+                  .get("Error", [])
+        )
+        if any(isinstance(e, dict) and e.get("SourceCode") == "4350" for e in create_errors):
+            self._purge_stale_workbench(wb_res)
+            wb_res = self.request("POST", TravelportEndpoints.WORKBENCH_CREATE, json=workbench_payload, custom_headers=custom_headers)
+            
+        # Capture the real session identifier generated by the Workbench Creation!
+        session_id = wb_res.get("_headers", {}).get("TravelportPlusSessionIdentifier")
+        if session_id:
+            custom_headers["TravelportPlusSessionIdentifier"] = session_id
+        elif wb_res.get("_headers", {}).get("travelportplussessionidentifier"):
+            custom_headers["TravelportPlusSessionIdentifier"] = wb_res.get("_headers", {}).get("travelportplussessionidentifier")
+
+        wb_id = wb_res.get("ReservationResponse", {}).get("Reservation", {}).get("Identifier", {}).get("value")
+
         if not wb_id:
-            raise Exception("Failed to create Travelport Workbench")
+            # Surface the actual GDS error if present
+            gds_msgs = "; ".join(
+                e.get("Message", "") for e in create_errors if isinstance(e, dict)
+            )
+            raise Exception(
+                f"Failed to create Travelport Workbench"
+                + (f": {gds_msgs}" if gds_msgs else "")
+            )
 
-        # 2. Add Travelers
-        travelers_payload = {
-            "TravelerBuildRequest": {
-                "TravelerBuildRequest": {
-                    "travelers": []
+        try:
+            # 2. Add Travelers
+            for idx, pax in enumerate(booking_params.passengers):
+                traveler_node = {
+                    "@type": "Traveler",
+                    "id": f"trav_{idx+1}",
+                    "passengerTypeCode": pax.passenger_type,
+                    "gender": pax.gender if pax.gender else "Unspecified",
+                    "birthDate": pax.date_of_birth,
+                    "PersonName": {
+                        "@type": "PersonNameDetail",
+                        "Given": pax.first_name,
+                        "Surname": pax.last_name
+                    }
                 }
-            }
-        }
-        for pax in booking_params.passengers:
-            traveler_node = {
-                "travelerType": pax.passenger_type,
-                "personName": {
-                    "givenName": pax.first_name,
-                    "surname": pax.last_name
-                },
-                "birthDate": pax.date_of_birth,
-                "gender": pax.gender
-            }
-            if pax.phone:
-                traveler_node["contactPhone"] = [{"number": pax.phone}]
-            if pax.document_number:
-                traveler_node["identityDocument"] = [{
-                    "documentNumber": pax.document_number,
-                    "documentType": "Passport",
-                    "expiryDate": pax.document_expiry,
-                    "issueCountry": pax.document_issue_country or "BD"
-                }]
-            travelers_payload["TravelerBuildRequest"]["TravelerBuildRequest"]["travelers"].append(traveler_node)
+                if pax.phone:
+                    traveler_node["Telephone"] = [{
+                        "@type": "Telephone",
+                        "countryAccessCode": "1",
+                        "phoneNumber": pax.phone,
+                        "id": f"phone_{idx+1}",
+                        "cityCode": "ORD",
+                        "role": "Home"
+                    }]
+                if pax.email:
+                    traveler_node["Email"] = [{"value": pax.email}]
+                if pax.document_number:
+                    traveler_node["TravelDocument"] = [{
+                        "@type": "TravelDocumentDetail",
+                        "docNumber": pax.document_number,
+                        "docType": "Passport",
+                        "expireDate": pax.document_expiry,
+                        "issueCountry": pax.document_issue_country or "BD",
+                        "birthDate": pax.date_of_birth,
+                        "Gender": pax.gender if pax.gender else "Unspecified",
+                        "PersonName": {
+                            "@type": "PersonName",
+                            "Given": pax.first_name,
+                            "Surname": pax.last_name
+                        }
+                    }]
+                self.request("POST", TravelportEndpoints.WORKBENCH_TRAVELERS.format(id=wb_id), json=traveler_node, custom_headers=custom_headers)
 
-        self.request("POST", TravelportEndpoints.WORKBENCH_TRAVELERS.format(id=wb_id), json=travelers_payload)
-
-        # 3. Add Offer (AirOffer)
-        offer_id = booking_params.flight_segments[0].get("offer_id") if booking_params.flight_segments else None
-        if offer_id:
-            offer_payload = {
-                "AirOfferBuildRequest": {
-                    "AirOfferBuildRequest": {
-                        "offers": [{"Identifier": {"id": offer_id}}]
+            # 3. Add Travel Agency
+            agency_payload = {
+                "TravelAgencyQueryTravelAgencyWrapper": {
+                    "TravelAgencyQueryTravelAgency": {
+                        "Telephone": [
+                            {
+                                "countryAccessCode": "1",
+                                "areaCityCode": "303",
+                                "phoneNumber": "1234567"
+                            }
+                        ]
                     }
                 }
             }
-            self.request("POST", TravelportEndpoints.WORKBENCH_OFFERS.format(id=wb_id), json=offer_payload)
+            self.request("POST", TravelportEndpoints.WORKBENCH_TRAVEL_AGENCY.format(id=wb_id), json=agency_payload, custom_headers=custom_headers)
 
-        # 4. Commit Workbench
-        commit_payload = {
-            "ReservationWorkbenchCommitRequest": {
-                "ReservationWorkbenchCommitRequest": {
-                    "receivedFrom": "API"
+            # 4. Add Offer (AirOffer)
+            offer_payload = {
+                "OfferQueryBuildFromCatalogProductOfferings": {
+                    "BuildFromCatalogProductOfferingsRequest": {
+                        "CatalogProductOfferingSelection": [
+                            {
+                                "@type": "CatalogProductOfferingSelection",
+                                "CatalogProductOfferingIdentifier": {
+                                    "id": offer_id,
+                                    "Identifier": {
+                                        "authority": "Travelport",
+                                        "value": offer_id
+                                    }
+                                }
+                            }
+                        ]
+                    }
                 }
             }
-        }
-        try:
-            return self.request("POST", TravelportEndpoints.WORKBENCH_COMMIT.format(id=wb_id), json=commit_payload)
+            if transaction_id:
+                offer_payload["OfferQueryBuildFromCatalogProductOfferings"]["transactionId"] = transaction_id
+                offer_payload["OfferQueryBuildFromCatalogProductOfferings"]["BuildFromCatalogProductOfferingsRequest"]["transactionId"] = transaction_id
+                
+            self.request("POST", TravelportEndpoints.WORKBENCH_OFFERS.format(id=wb_id), json=offer_payload, custom_headers=custom_headers)
+
+            # 5. Commit Workbench
+            commit_payload = {
+                "@type": "ReservationQueryCommitReservation"
+            }
+            try:
+                commit_res = self.request("POST", TravelportEndpoints.WORKBENCH_COMMIT.format(id=wb_id), json=commit_payload, custom_headers=custom_headers)
+                return commit_res
+            except Exception as commit_err:
+                err_str = str(commit_err)
+                if "4350" in err_str and "COMMIT OR IGNORE" in err_str:
+                    # The GDS session has a stale uncommitted workbench from a previous run.
+                    # Force a fresh HTTP Session to drop sticky cookies,
+                    # clear the redis token, and retry the entire flow once on the clean session.
+
+                    with self._lock:
+                        # Drop HTTP cookies to escape sticky GDS session routing
+                        self.session = create_http_session()
+                        
+                        # Evict the stale token from Redis so _refresh_token fetches a brand-new one
+                        try:
+                            redis_helper.delete_key(self.token_cache_key)
+                        except Exception:
+                            pass
+                        self._access_token = None
+                        self._token_expiry = 0.0
+                        self._refresh_token()
+
+                    # ── Retry on fresh session ──────────────────────────────────────────
+                    wb_res2 = self.request("POST", TravelportEndpoints.WORKBENCH_CREATE, json=workbench_payload, custom_headers=custom_headers)
+                    wb_id2 = wb_res2.get("ReservationResponse", {}).get("Reservation", {}).get("Identifier", {}).get("value")
+                    if not wb_id2:
+                        raise Exception(f"PNR creation failed (GDS error, retry): {err_str}")
+
+                    session_id2 = wb_res2.get("_headers", {}).get("TravelportPlusSessionIdentifier") or wb_res2.get("_headers", {}).get("travelportplussessionidentifier")
+                    if session_id2:
+                        custom_headers["TravelportPlusSessionIdentifier"] = session_id2
+
+                    try:
+                        for idx, pax in enumerate(booking_params.passengers):
+                            traveler_node = {
+                                "@type": "Traveler",
+                                "id": f"trav_{idx+1}",
+                                "passengerTypeCode": pax.passenger_type,
+                                "gender": pax.gender if pax.gender else "Unspecified",
+                                "birthDate": pax.date_of_birth,
+                                "PersonName": {
+                                    "@type": "PersonNameDetail",
+                                    "Given": pax.first_name,
+                                    "Surname": pax.last_name
+                                }
+                            }
+                            if pax.phone:
+                                traveler_node["Telephone"] = [{
+                                    "@type": "Telephone",
+                                    "countryAccessCode": "1",
+                                    "phoneNumber": pax.phone,
+                                    "id": f"phone_{idx+1}",
+                                    "cityCode": "ORD",
+                                    "role": "Home"
+                                }]
+                            if pax.email:
+                                traveler_node["Email"] = [{"value": pax.email}]
+                            if pax.document_number:
+                                traveler_node["TravelDocument"] = [{
+                                    "@type": "TravelDocumentDetail",
+                                    "docNumber": pax.document_number,
+                                    "docType": "Passport",
+                                    "expireDate": pax.document_expiry,
+                                    "issueCountry": pax.document_issue_country or "BD",
+                                    "birthDate": pax.date_of_birth,
+                                    "Gender": pax.gender if pax.gender else "Unspecified",
+                                    "PersonName": {
+                                        "@type": "PersonName",
+                                        "Given": pax.first_name,
+                                        "Surname": pax.last_name
+                                    }
+                                }]
+                            self.request("POST", TravelportEndpoints.WORKBENCH_TRAVELERS.format(id=wb_id2), json=traveler_node, custom_headers=custom_headers)
+
+                        self.request("POST", TravelportEndpoints.WORKBENCH_TRAVEL_AGENCY.format(id=wb_id2), json=agency_payload, custom_headers=custom_headers)
+
+                        self.request("POST", TravelportEndpoints.WORKBENCH_OFFERS.format(id=wb_id2), json=offer_payload, custom_headers=custom_headers)
+
+                        retry_res = self.request("POST", TravelportEndpoints.WORKBENCH_COMMIT.format(id=wb_id2), json=commit_payload, custom_headers=custom_headers)
+                        return retry_res
+
+                    except Exception as retry_err:
+                        raise Exception(str(retry_err))
+
+                # If it was some other error, just raise it
+                raise commit_err
+
         except Exception as e:
             raise Exception(f"PNR creation failed. {str(e)}")
 

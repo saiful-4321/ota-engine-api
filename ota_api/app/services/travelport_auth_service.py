@@ -7,6 +7,8 @@ from urllib3.util.retry import Retry
 
 from app.services.supplier_config_service import SupplierConfigService, SupplierConfig
 from app.utils.redis_utils import redis_helper
+from app.helpers.common import write_log
+from app.services.supplier_token_service import SupplierTokenService
 
 
 def create_http_session() -> requests.Session:
@@ -51,7 +53,9 @@ class TravelportAuthService:
         }
 
         try:
+            write_log(f"Travelport Auth Request: POST {url} | Data: {data}", source="travelport_auth", type="info")
             response = self.session.post(url, headers=headers, data=data, timeout=15)
+            write_log(f"Travelport Auth Response: {response.status_code} | Body: {response.text}", source="travelport_auth", type="info")
 
             if response.status_code != 200:
                 raise Exception(
@@ -98,8 +102,18 @@ class TravelportBaseService:
         self._access_token = token_data["access_token"]
         
         expires_in = int(token_data.get("expires_in", 86400))
-        ttl_minutes = expires_in // 60
-        redis_helper.set_data_ttl(self.token_cache_key, self._access_token, ttl_minutes=ttl_minutes)
+        
+        # Save to DB
+        SupplierTokenService.save_token_to_db(
+            supplier_id=self.supplier_id,
+            token_key=self.token_cache_key,
+            access_token=self._access_token,
+            expires_in_seconds=expires_in
+        )
+
+        # Cache in Redis for up to 1 hour to reduce DB hits
+        redis_ttl = min(expires_in, 3600)
+        redis_helper.set_data_ttl(self.token_cache_key, self._access_token, ttl_minutes=redis_ttl // 60)
 
         # safety buffer 60s
         self._token_expiry = time.time() + expires_in - 60
@@ -121,6 +135,15 @@ class TravelportBaseService:
             if cached_token:
                 self._access_token = cached_token
                 self._token_expiry = time.time() + 3600 # Assume valid for another 1 hour to reduce Redis hits
+                return self._access_token
+
+            # Try fetching from DB
+            db_token = SupplierTokenService.get_token_from_db(self.supplier_id, self.token_cache_key)
+            if db_token:
+                self._access_token = db_token
+                self._token_expiry = time.time() + 3600 # Assume valid for another hour locally
+                # Re-cache in Redis for 1 hour
+                redis_helper.set_data_ttl(self.token_cache_key, self._access_token, ttl_minutes=60)
                 return self._access_token
 
             self._refresh_token()
@@ -164,6 +187,11 @@ class TravelportBaseService:
         headers = self.get_headers(custom_headers)
 
         try:
+            log_headers = {k: ("Bearer [REDACTED]" if k == "Authorization" else v) for k, v in headers.items()}
+            write_log(
+                f"Travelport Request: {method.upper()} {url} | Headers: {log_headers} | Params: {params} | JSON: {json}",
+                source="travelport_service", type="info"
+            )
             response = self.session.request(
                 method=method.upper(),
                 url=url,
@@ -179,6 +207,11 @@ class TravelportBaseService:
                     self._refresh_token()
 
                 headers = self.get_headers(custom_headers)
+                log_retry_headers = {k: ("Bearer [REDACTED]" if k == "Authorization" else v) for k, v in headers.items()}
+                write_log(
+                    f"Travelport Request (Retry): {method.upper()} {url} | Headers: {log_retry_headers} | Params: {params} | JSON: {json}",
+                    source="travelport_service", type="info"
+                )
                 response = self.session.request(
                     method=method.upper(),
                     url=url,
@@ -188,26 +221,42 @@ class TravelportBaseService:
                     timeout=25
                 )
 
-            if response.status_code >= 400:
-                err_detail = ""
-                try:
-                    res_json = response.json()
-                    errors = (
-                        res_json.get("CatalogProductOfferingsResponse", {}).get("Result", {}).get("Error")
-                        or res_json.get("Result", {}).get("Error")
-                        or []
-                    )
-                    err_msgs = [f"[{e.get('category')} #{e.get('SourceCode')}] {e.get('Message')}" for e in errors]
-                    if err_msgs:
-                        err_detail = " | " + " ; ".join(err_msgs)
-                except Exception:
-                    pass
+            write_log(
+                f"Travelport Response: {response.status_code} | Body: {response.text}",
+                source="travelport_service", type="info"
+            )
 
+            # Check for HTTP errors or GDS business logic errors (often returned as 200 OK)
+            err_detail = ""
+            try:
+                if response.text:
+                    res_json = response.json()
+                    
+                    # Travelport wraps responses in different root keys (e.g., ReservationResponse, OfferListResponse).
+                    # Search for Result.Error anywhere near the top level.
+                    errors = res_json.get("Result", {}).get("Error") or []
+                    if not errors:
+                        for key, value in res_json.items():
+                            if isinstance(value, dict) and "Result" in value:
+                                errors = value.get("Result", {}).get("Error") or []
+                                break
+                    
+                    if errors:
+                        err_msgs = [f"[{e.get('category')} #{e.get('SourceCode')}] {e.get('Message')}" for e in errors if isinstance(e, dict)]
+                        if err_msgs:
+                            err_detail = " | " + " ; ".join(err_msgs)
+            except Exception:
+                pass
+
+            if response.status_code >= 400 or err_detail:
                 raise Exception(
                     f"Travelport API Error {response.status_code}{err_detail} | {response.text}"
                 )
 
-            return response.json() if response.text else {}
+            res_data = response.json() if response.text else {}
+            if isinstance(res_data, dict):
+                res_data["_headers"] = dict(response.headers)
+            return res_data
 
         except Exception as e:
             if "Travelport API Call Failed" in str(e):

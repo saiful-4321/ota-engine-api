@@ -17,18 +17,28 @@ class LogSource(Enum):
     OMS_API = "OMS API"
 
 def log_exception(exception, source, type = 'error', broker = "UFTCL"):
-    # Create a log file with the current date
+    import os
+    os.makedirs("log", exist_ok=True)
     log_filename = f"log/{datetime.now(BD_TIMEZONE).strftime('%Y-%m-%d')}.log"
-
-    # Configure the logging module
-    logging.basicConfig(filename=log_filename, level=logging.INFO)
+    
+    logger = logging.getLogger("ota_file_logger")
+    logger.setLevel(logging.INFO)
+    
+    # Avoid adding multiple handlers if already present
+    if not logger.handlers:
+        file_handler = logging.FileHandler(log_filename)
+        file_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(message)s')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
     if type == 'error':
-        logging.error(f"[{datetime.now(BD_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}], BROKER: {BROKER_NAME},\n    Source: {source} \n    {exception}")
+        logger.error(f"[{datetime.now(BD_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}], BROKER: {BROKER_NAME},\n    Source: {source} \n    {exception}")
     elif type == 'debug':
-        logging.debug(f"[{datetime.now(BD_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}], BROKER: {BROKER_NAME},\n    Source: {source} \n    {exception}")
+        logger.debug(f"[{datetime.now(BD_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}], BROKER: {BROKER_NAME},\n    Source: {source} \n    {exception}")
     else:
-        logging.info(f"[{datetime.now(BD_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}], BROKER: {BROKER_NAME},\n    Source: {source} \n    {exception}")
+        logger.info(f"[{datetime.now(BD_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}], BROKER: {BROKER_NAME},\n    Source: {source} \n    {exception}")
+
 
     if ERROR_LOG_ENABLED:
         log_monitoring(exception=exception, source=source, type=type)

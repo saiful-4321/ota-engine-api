@@ -1,0 +1,31 @@
+{
+  "name": "ota-websocket-microservice",
+  "version": "1.0.0",
+  "description": "Real-time WebSocket microservice for OTA Backoffice and Python API",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "websocket",
+    "socket.io",
+    "laravel",
+    "python",
+    "microservice",
+    "realtime"
+  ],
+  "author": "OTA Backoffice Team",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ioredis": "^5.4.1",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}

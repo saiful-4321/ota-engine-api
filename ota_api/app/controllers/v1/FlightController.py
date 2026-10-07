@@ -264,11 +264,29 @@ async def search_flights(
 # Pricing
 # ===========================================================================
 
+def _resolve_request_supplier(request: Any, fallback: str) -> str:
+    """Intelligently determine the supplier from the request or fallback."""
+    sup = getattr(request, "supplier", None)
+    if sup:
+        return sup
+    # Try extracting from flight segments if available
+    segments = getattr(request, "flight_segments", None)
+    if segments and isinstance(segments, list) and len(segments) > 0:
+        first_seg = segments[0]
+        if isinstance(first_seg, dict):
+            seg_sup = (first_seg.get("supplier_code") or 
+                       first_seg.get("supplier") or 
+                       first_seg.get("api_provider"))
+            if seg_sup:
+                return str(seg_sup)
+    return fallback
+
+
 @router.post("/price", summary="Price / Revalidate Itinerary",
              description="Verifies live pricing for a given flight itinerary.")
 async def price_flight(request: FlightPricingRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return format_pricing_response(sup, resolve_supplier(sup).price_flight(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -289,7 +307,7 @@ async def book_flight(
     supplier: str = _S
 ):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         response = resolve_supplier(sup).create_pnr(request)
         formatted = format_pnr_response(sup, response)
         
@@ -313,7 +331,7 @@ async def book_flight(
              description="Retrieves full details of an existing booking / PNR.")
 async def pnr_details(request: PNRDetailsRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return format_pnr_details_response(sup, resolve_supplier(sup).get_pnr_details(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -325,7 +343,7 @@ async def pnr_details(request: PNRDetailsRequest, supplier: str = _S):
              description="Cancels an existing itinerary / PNR.")
 async def pnr_cancel(request: CancelItineraryRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return format_cancel_response(sup, resolve_supplier(sup).cancel_itinerary(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -344,7 +362,7 @@ async def pnr_cancel(request: CancelItineraryRequest, supplier: str = _S):
 )
 async def pnr_reprice(request: RepricePNRRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         result = resolve_supplier(sup).reprice_pnr(
             pnr=request.pnr,
             passenger_types=request.passenger_types,
@@ -365,7 +383,7 @@ async def pnr_reprice(request: RepricePNRRequest, supplier: str = _S):
              description="Places a PNR on a specific agency queue.")
 async def queue_place(request: QueueRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return resolve_supplier(sup).place_in_queue(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -386,7 +404,7 @@ async def ticket_issue(
     supplier: str = _S
 ):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         response = resolve_supplier(sup).issue_ticket(request)
         formatted = format_ticketing_response(sup, response)
         
@@ -411,7 +429,7 @@ async def ticket_issue(
              description="Voids a previously issued electronic ticket (typically within 24 hours).")
 async def ticket_void(request: VoidTicketRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return resolve_supplier(sup).void_ticket(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -423,7 +441,7 @@ async def ticket_void(request: VoidTicketRequest, supplier: str = _S):
              description="Performs an automated exchange / reissue of an existing ticket.")
 async def ticket_exchange(request: ExchangeTicketRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return resolve_supplier(sup).exchange_ticket(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -439,7 +457,7 @@ async def ticket_exchange(request: ExchangeTicketRequest, supplier: str = _S):
              description="Retrieves available seats for a specific flight segment.")
 async def seat_map(request: SeatMapRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return resolve_supplier(sup).get_seat_maps(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -454,7 +472,7 @@ async def seat_map(request: SeatMapRequest, supplier: str = _S):
 )
 async def baggage_allowance(request: BaggageAllowanceRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return resolve_supplier(sup).get_baggage_allowance(request)
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
@@ -469,7 +487,7 @@ async def baggage_allowance(request: BaggageAllowanceRequest, supplier: str = _S
 )
 async def fare_rules(request: FareRulesRequest, supplier: str = _S):
     try:
-        sup = getattr(request, "supplier", None) or supplier
+        sup = _resolve_request_supplier(request, supplier)
         return format_fare_rules_response(sup, resolve_supplier(sup).get_fare_rules(request))
     except ValueError as ve:
         return JSONResponse(status_code=400, content=format_error_response(ve))
