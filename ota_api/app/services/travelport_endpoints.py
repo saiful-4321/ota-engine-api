@@ -4,7 +4,7 @@ class TravelportEndpoints:
     
     # Search and Price
     CATALOG_SEARCH = "/air/catalog/search/catalogproductofferings"
-    CATALOG_PRICE = "/air/catalog/price/catalogproductofferings"
+    CATALOG_PRICE = "/air/price/offers/buildfromcatalogproductofferings"
     FARE_RULES = "/air/catalog/farerule"
     SEAT_MAP = "/air/catalog/search/seatmap"
     ANCILLARY_SHOP = "/air/catalog/search/ancillaryofferings"

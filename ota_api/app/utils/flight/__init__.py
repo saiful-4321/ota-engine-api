@@ -36,6 +36,8 @@ def format_pricing_response(supplier: str, response: Dict[str, Any]) -> Dict[str
     key = str(supplier or "").lower()
     if "sabre" in key:
         return sabre.format_pricing_response(response)
+    elif "travelport" in key or "gal" in key or "1g" in key or (isinstance(response, dict) and "OfferListResponse" in response):
+        return travelport.format_pricing_response(response)
     return response
 
 
@@ -46,6 +48,8 @@ def format_pnr_response(supplier: str, response: Dict[str, Any]) -> Dict[str, An
     key = str(supplier or "").lower()
     if "sabre" in key:
         return sabre.format_pnr_response(response)
+    elif "travelport" in key or "gal" in key or "1g" in key or (isinstance(response, dict) and "ReservationResponse" in response):
+        return travelport.format_pnr_response(response)
     return response
 
 
@@ -53,6 +57,8 @@ def format_pnr_details_response(supplier: str, response: Dict[str, Any]) -> Dict
     key = str(supplier or "").lower()
     if "sabre" in key:
         return sabre.format_pnr_details_response(response)
+    elif "travelport" in key or "gal" in key or "1g" in key or (isinstance(response, dict) and "ReservationResponse" in response):
+        return travelport.format_pnr_response(response)
     return response
 
 

@@ -90,15 +90,10 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
     trace_id = travelport_response.get("_trace_id", "")
     root = travelport_response.get("CatalogProductOfferingsResponse", {})
     transaction_id = root.get("transactionId", "")
+    cpo_id = root.get("CatalogProductOfferings", {}).get("Identifier", {}).get("value") or transaction_id
 
     for idx, off in enumerate(offerings):
         raw_offer_id = off.get("id", f"cpo_{idx}")
-        if trace_id and transaction_id:
-            offer_id = f"{raw_offer_id}@@{trace_id}@@{transaction_id}"
-        elif trace_id:
-            offer_id = f"{raw_offer_id}@@{trace_id}"
-        else:
-            offer_id = raw_offer_id
         options = off.get("ProductBrandOptions", [])
 
         for opt in options:
@@ -108,6 +103,19 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
                 continue
 
             for pbo in opt.get("ProductBrandOffering", []):
+                # Extract productRef for this specific flight offering option
+                prod_ref = "p0"
+                prods = pbo.get("Product", [])
+                if prods and isinstance(prods, list) and isinstance(prods[0], dict):
+                    prod_ref = prods[0].get("productRef") or "p0"
+
+                top_c = flight_objs[0].get("carrier", "")
+                if trace_id and cpo_id:
+                    offer_id = f"{raw_offer_id}@@{trace_id}@@{cpo_id}@@{prod_ref}@@{top_c}"
+                elif trace_id:
+                    offer_id = f"{raw_offer_id}@@{trace_id}@@@@{prod_ref}@@{top_c}"
+                else:
+                    offer_id = raw_offer_id
                 price_detail = pbo.get("BestCombinablePrice", {})
                 total_price_num = price_detail.get("TotalPrice", 0)
                 base_fare = price_detail.get("Base", 0)
@@ -275,4 +283,184 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
         },
         "filters": filters,
         "flights": formatted_flights
+    }
+
+def format_pnr_response(travelport_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the Travelport reservation commit response into a standardized structure
+    containing the PNR (locator), travelers, status, and itinerary.
+    """
+    if "ReservationResponse" not in travelport_response:
+        return {
+            "status": "error",
+            "message": "Invalid response from Travelport",
+            "details": travelport_response
+        }
+
+    res_resp = travelport_response.get("ReservationResponse", {})
+    reservation = res_resp.get("Reservation", {})
+    
+    # 1. Extract PNR (Record Locator)
+    pnr = None
+    receipts = reservation.get("Receipt", [])
+    for r in receipts:
+        conf = r.get("Confirmation", {})
+        loc = conf.get("Locator", {})
+        if loc and loc.get("value"):
+            pnr = loc.get("value")
+            break
+
+    if not pnr:
+        pnr = reservation.get("Identifier", {}).get("value") or travelport_response.get("Locator", {}).get("value") or "N/A"
+
+    # 2. Extract Travelers
+    travelers = []
+    for tr in reservation.get("Traveler", []):
+        name_obj = tr.get("PersonName", {})
+        given = name_obj.get("Given", "")
+        surname = name_obj.get("Surname", "")
+        travelers.append({
+            "id": tr.get("id"),
+            "name": f"{given} {surname}".strip(),
+            "passengerType": tr.get("passengerTypeCode", "ADT"),
+            "gender": tr.get("gender"),
+            "birthDate": tr.get("birthDate")
+        })
+
+    # 3. Extract Itinerary / Segments
+    segments = []
+    for off in reservation.get("Offer", []):
+        for prod in off.get("Product", []):
+            for fs in prod.get("FlightSegment", []):
+                flt = fs.get("Flight", {})
+                dep = flt.get("Departure", {})
+                arr = flt.get("Arrival", {})
+                segments.append({
+                    "flightNumber": flt.get("number"),
+                    "carrier": flt.get("carrier"),
+                    "origin": dep.get("location"),
+                    "destination": arr.get("location"),
+                    "departureDate": dep.get("date"),
+                    "departureTime": dep.get("time"),
+                    "arrivalDate": arr.get("date"),
+                    "arrivalTime": arr.get("time"),
+                    "equipment": flt.get("equipment")
+                })
+
+    res_id = reservation.get("Identifier", {}).get("value")
+
+    return {
+        "status": "success",
+        "pnr": pnr,
+        "booking": {
+            "pnr": pnr,
+            "status": "Confirmed",
+            "reservation_id": res_id,
+            "travelers": travelers,
+            "itinerary": segments,
+            "raw": travelport_response
+        },
+        "data": {
+            "pnr": pnr,
+            "status": "Confirmed",
+            "reservation_id": res_id
+        }
+    }
+
+
+def format_pricing_response(travelport_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Formats the Travelport buildfromcatalogproductofferings AirPrice response into
+    a standardized structure containing total fare, base fare, taxes, and breakdown.
+    """
+    offer_list_resp = travelport_response.get("OfferListResponse", {})
+    offers = offer_list_resp.get("OfferID", [])
+    if not offers:
+        offers = travelport_response.get("Offer", [])
+
+    if not offers:
+        return {
+            "status": "error",
+            "message": "No pricing offers returned by Travelport",
+            "details": travelport_response
+        }
+
+    first_offer = offers[0]
+    price_obj = first_offer.get("Price", {})
+    currency = price_obj.get("CurrencyCode", {}).get("value", "BDT")
+    base_fare = price_obj.get("Base", 0)
+    total_taxes = price_obj.get("TotalTaxes", 0)
+    total_fare = price_obj.get("TotalPrice", base_fare + total_taxes)
+
+    # Tax breakdown
+    tax_breakdown = []
+    breakdowns = price_obj.get("PriceBreakdown", [])
+    if breakdowns:
+        taxes_detail = breakdowns[0].get("Amount", {}).get("Taxes", {})
+        for t in taxes_detail.get("Tax", []):
+            tax_breakdown.append({
+                "code": t.get("taxCode"),
+                "amount": t.get("value"),
+                "description": t.get("description")
+            })
+
+    # Segments
+    itinerary = []
+    for prod in first_offer.get("Product", []):
+        for fs in prod.get("FlightSegment", []):
+            flt = fs.get("Flight", {})
+            dep = flt.get("Departure", {})
+            arr = flt.get("Arrival", {})
+            itinerary.append({
+                "flightNumber": flt.get("number"),
+                "carrier": flt.get("carrier"),
+                "origin": dep.get("location"),
+                "destination": arr.get("location"),
+                "departure": f"{dep.get('date')} {dep.get('time')}".strip(),
+                "arrival": f"{arr.get('date')} {arr.get('time')}".strip()
+            })
+
+    # Baggage & penalties from TermsAndConditionsFull
+    terms = first_offer.get("TermsAndConditionsFull", [])
+    baggage_info = []
+    penalties_info = {}
+    for term in terms:
+        for bag in term.get("BaggageAllowance", []):
+            items = bag.get("BaggageItem", [])
+            txt = items[0].get("Text") if items else ""
+            baggage_info.append({
+                "type": bag.get("baggageType"),
+                "details": txt,
+                "pieces": bag.get("Text")
+            })
+        if "Penalties" in term:
+            penalties_info = term.get("Penalties", {})
+
+    return {
+        "status": "success",
+        "message": "Flight price revalidated successfully",
+        "pricing": {
+            "total": total_fare,
+            "total_fare": total_fare,
+            "base": base_fare,
+            "base_fare": base_fare,
+            "taxes": total_taxes,
+            "tax_amount": total_taxes,
+            "currency": currency,
+            "taxBreakdown": tax_breakdown,
+            "baggage": baggage_info,
+            "penalties": penalties_info,
+            "itinerary": itinerary
+        },
+        "data": {
+            "pricing": {
+                "total": total_fare,
+                "total_fare": total_fare,
+                "base": base_fare,
+                "base_fare": base_fare,
+                "taxes": total_taxes,
+                "tax_amount": total_taxes,
+                "currency": currency
+            }
+        }
     }

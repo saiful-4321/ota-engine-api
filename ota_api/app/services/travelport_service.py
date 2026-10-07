@@ -191,8 +191,7 @@ class TravelportFlightService(TravelportBaseService):
                 })
 
         modifiers: Dict[str, Any] = {
-            "@type": "SearchModifiersAir",
-            "offersPerPage": 20
+            "@type": "SearchModifiersAir"
         }
 
         # Cabin preference
@@ -230,6 +229,7 @@ class TravelportFlightService(TravelportBaseService):
 
         air_request: Dict[str, Any] = {
             "@type": "CatalogProductOfferingsRequestAir",
+            "offersPerPage": 20,
             "PassengerCriteria": passengers,
             "SearchCriteriaFlight": journey_list,
             "SearchModifiersAir": modifiers
@@ -253,28 +253,84 @@ class TravelportFlightService(TravelportBaseService):
 
 
     def price_flight(self, pricing_params: FlightPricingRequest) -> dict:
-        payload = {
-            "CatalogProductOfferingsPriceRequest": {
-                "CatalogProductOfferingsPriceRequest": {
-                    "passengerCriteria": [
-                        {"passengerTypeCode": p.passenger_type, "quantity": p.quantity}
-                        for p in pricing_params.passengers
-                    ],
-                    "offers": []
-                }
-            }
-        }
-        
-        # NOTE: Travelport pricing needs the offer ID from search.
         offer_id = pricing_params.offer_id
         if not offer_id and pricing_params.flight_segments:
-            offer_id = pricing_params.flight_segments[0].get("offer_id")
-        
-        if offer_id:
-            payload["CatalogProductOfferingsPriceRequest"]["CatalogProductOfferingsPriceRequest"]["offers"].append({"Identifier": {"id": offer_id}})
-            
+            seg = pricing_params.flight_segments[0]
+            offer_id = seg.get("offer_id") or seg.get("offerId") or seg.get("id")
+
+        custom_headers = {}
+        cpo_id = None
+        prod_ref = "p0"
+        val_carrier = None
+
+        if offer_id and "@@" in offer_id:
+            parts = offer_id.split("@@")
+            raw_offer_id = parts[0]
+            trace_id = parts[1] if len(parts) > 1 else None
+            if trace_id:
+                custom_headers["TraceId"] = trace_id
+            if len(parts) > 2 and parts[2]:
+                cpo_id = parts[2]
+            if len(parts) > 3 and parts[3]:
+                prod_ref = parts[3]
+            if len(parts) > 4 and parts[4]:
+                val_carrier = parts[4]
+            offer_id = raw_offer_id
+
+        if not val_carrier and pricing_params.flight_segments:
+            for s in pricing_params.flight_segments:
+                c = (
+                    s.get("validatingCarrier")
+                    or s.get("carrier")
+                    or s.get("airlineCode")
+                    or (s.get("airline", {}) if isinstance(s.get("airline"), dict) else {}).get("code")
+                )
+                if c:
+                    val_carrier = str(c).strip().upper()
+                    break
+
+        build_request: Dict[str, Any] = {
+            "@type": "BuildFromCatalogProductOfferingsRequestAir",
+            "CatalogProductOfferingSelection": [
+                {
+                    "CatalogProductOfferingIdentifier": {
+                        "Identifier": {
+                            "value": offer_id or "o0"
+                        }
+                    },
+                    "ProductIdentifier": [
+                        {
+                            "Identifier": {
+                                "value": prod_ref or "p0"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        if cpo_id:
+            build_request["CatalogProductOfferingsIdentifier"] = {
+                "Identifier": {
+                    "value": cpo_id
+                }
+            }
+        if val_carrier:
+            build_request["PricingModifiersAir"] = {
+                "@type": "PricingModifiersAir",
+                "FareSelection": {
+                    "@type": "FareSelectionDetail",
+                    "validatingCarrier": val_carrier.upper()
+                }
+            }
+
+        payload = {
+            "OfferQueryBuildFromCatalogProductOfferings": {
+                "BuildFromCatalogProductOfferingsRequest": build_request
+            }
+        }
+
         try:
-            return self.request("POST", TravelportEndpoints.CATALOG_PRICE, json=payload)
+            return self.request("POST", TravelportEndpoints.CATALOG_PRICE, json=payload, custom_headers=custom_headers)
         except Exception as e:
             raise Exception(f"Flight pricing revalidation failed. {str(e)}")
 
@@ -322,17 +378,39 @@ class TravelportFlightService(TravelportBaseService):
             offer_id = seg.get("offer_id") or seg.get("offerId") or seg.get("id")
 
         custom_headers = {}
-        transaction_id = None
+        cpo_id = None
+        prod_ref = "p0"
+        val_carrier = getattr(booking_params, "validating_carrier", None)
+
         if offer_id and "@@" in offer_id:
             parts = offer_id.split("@@")
-            offer_id = parts[0]  # clean ID e.g. "o8"
-            booking_params.offer_id = offer_id
+            raw_offer_id = parts[0]  # clean ID e.g. "o4"
+            booking_params.offer_id = raw_offer_id
             
-            trace_id = parts[1]
-            custom_headers = {"TraceId": trace_id}
+            trace_id = parts[1] if len(parts) > 1 else None
+            if trace_id:
+                custom_headers["TraceId"] = trace_id
             
-            if len(parts) > 2:
-                transaction_id = parts[2]
+            if len(parts) > 2 and parts[2]:
+                cpo_id = parts[2]
+            if len(parts) > 3 and parts[3]:
+                prod_ref = parts[3]
+            if len(parts) > 4 and parts[4] and not val_carrier:
+                val_carrier = parts[4]
+            offer_id = raw_offer_id
+
+        # Fallback validating carrier if not provided
+        if not val_carrier and booking_params.flight_segments:
+            for s in booking_params.flight_segments:
+                c = (
+                    s.get("validatingCarrier")
+                    or s.get("carrier")
+                    or s.get("airlineCode")
+                    or (s.get("airline", {}) if isinstance(s.get("airline"), dict) else {}).get("code")
+                )
+                if c:
+                    val_carrier = str(c).strip().upper()
+                    break
 
         # Workbench orchestrated flow
         # 1. Create Workbench — with stale-workbench recovery
@@ -361,7 +439,6 @@ class TravelportFlightService(TravelportBaseService):
         wb_id = wb_res.get("ReservationResponse", {}).get("Reservation", {}).get("Identifier", {}).get("value")
 
         if not wb_id:
-            # Surface the actual GDS error if present
             gds_msgs = "; ".join(
                 e.get("Message", "") for e in create_errors if isinstance(e, dict)
             )
@@ -370,88 +447,140 @@ class TravelportFlightService(TravelportBaseService):
                 + (f": {gds_msgs}" if gds_msgs else "")
             )
 
-        try:
-            # 2. Add Travelers
+        def _build_traveler_nodes():
+            nodes = []
             for idx, pax in enumerate(booking_params.passengers):
-                traveler_node = {
+                gender = "Male"
+                if pax.gender:
+                    g_val = str(pax.gender).strip().upper()
+                    if g_val in ("M", "MALE"):
+                        gender = "Male"
+                    elif g_val in ("F", "FEMALE"):
+                        gender = "Female"
+                    elif g_val in ("U", "UNSPECIFIED"):
+                        gender = "Unspecified"
+                dob = pax.date_of_birth if pax.date_of_birth else "1990-01-01"
+                t_node = {
                     "@type": "Traveler",
                     "id": f"trav_{idx+1}",
-                    "passengerTypeCode": pax.passenger_type,
-                    "gender": pax.gender if pax.gender else "Unspecified",
-                    "birthDate": pax.date_of_birth,
+                    "passengerTypeCode": pax.passenger_type or "ADT",
+                    "gender": gender,
+                    "birthDate": dob,
                     "PersonName": {
                         "@type": "PersonNameDetail",
                         "Given": pax.first_name,
                         "Surname": pax.last_name
                     }
                 }
-                if pax.phone:
-                    traveler_node["Telephone"] = [{
-                        "@type": "Telephone",
-                        "countryAccessCode": "1",
-                        "phoneNumber": pax.phone,
-                        "id": f"phone_{idx+1}",
-                        "cityCode": "ORD",
-                        "role": "Home"
-                    }]
-                if pax.email:
-                    traveler_node["Email"] = [{"value": pax.email}]
+                raw_phone = pax.phone or ""
+                digits_phone = "".join(c for c in raw_phone if c.isdigit() or c == "+")
+                c_code = "880"
+                num = digits_phone
+                if digits_phone.startswith("+880"):
+                    c_code = "880"
+                    num = digits_phone[4:]
+                elif digits_phone.startswith("880"):
+                    c_code = "880"
+                    num = digits_phone[3:]
+                elif digits_phone.startswith("+"):
+                    c_code = digits_phone[1:4]
+                    num = digits_phone[4:]
+                if not num:
+                    num = "1711223344"
+
+                t_node["Telephone"] = [{
+                    "@type": "Telephone",
+                    "countryAccessCode": c_code,
+                    "phoneNumber": num,
+                    "id": f"phone_{idx+1}",
+                    "cityCode": "DAC",
+                    "role": "Home"
+                }]
+
+                email_val = pax.email if pax.email else "traveler@example.com"
+                t_node["Email"] = [{"value": email_val}]
+
                 if pax.document_number:
-                    traveler_node["TravelDocument"] = [{
+                    t_node["TravelDocument"] = [{
                         "@type": "TravelDocumentDetail",
                         "docNumber": pax.document_number,
                         "docType": "Passport",
-                        "expireDate": pax.document_expiry,
+                        "expireDate": pax.document_expiry or "2030-01-01",
                         "issueCountry": pax.document_issue_country or "BD",
-                        "birthDate": pax.date_of_birth,
-                        "Gender": pax.gender if pax.gender else "Unspecified",
+                        "birthDate": dob,
+                        "Gender": gender,
                         "PersonName": {
                             "@type": "PersonName",
                             "Given": pax.first_name,
                             "Surname": pax.last_name
                         }
                     }]
-                self.request("POST", TravelportEndpoints.WORKBENCH_TRAVELERS.format(id=wb_id), json=traveler_node, custom_headers=custom_headers)
+                nodes.append(t_node)
+            return nodes
 
-            # 3. Add Travel Agency
-            agency_payload = {
-                "TravelAgencyQueryTravelAgencyWrapper": {
-                    "TravelAgencyQueryTravelAgency": {
-                        "Telephone": [
-                            {
-                                "countryAccessCode": "1",
-                                "areaCityCode": "303",
-                                "phoneNumber": "1234567"
-                            }
-                        ]
-                    }
+        agency_payload = {
+            "TravelAgencyQueryTravelAgencyWrapper": {
+                "TravelAgencyQueryTravelAgency": {
+                    "Telephone": [
+                        {
+                            "countryAccessCode": "880",
+                            "areaCityCode": "2",
+                            "phoneNumber": "9887766"
+                        }
+                    ]
                 }
             }
+        }
+
+        build_req: Dict[str, Any] = {
+            "@type": "BuildFromCatalogProductOfferingsRequestAir",
+            "CatalogProductOfferingSelection": [
+                {
+                    "CatalogProductOfferingIdentifier": {
+                        "Identifier": {
+                            "value": offer_id or "o0"
+                        }
+                    },
+                    "ProductIdentifier": [
+                        {
+                            "Identifier": {
+                                "value": prod_ref or "p0"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        if cpo_id:
+            build_req["CatalogProductOfferingsIdentifier"] = {
+                "Identifier": {
+                    "value": cpo_id
+                }
+            }
+        if val_carrier:
+            build_req["PricingModifiersAir"] = {
+                "@type": "PricingModifiersAir",
+                "FareSelection": {
+                    "@type": "FareSelectionDetail",
+                    "validatingCarrier": val_carrier.upper()
+                }
+            }
+
+        offer_payload = {
+            "OfferQueryBuildFromCatalogProductOfferings": {
+                "BuildFromCatalogProductOfferingsRequest": build_req
+            }
+        }
+
+        try:
+            # 2. Add Travelers
+            for t_node in _build_traveler_nodes():
+                self.request("POST", TravelportEndpoints.WORKBENCH_TRAVELERS.format(id=wb_id), json=t_node, custom_headers=custom_headers)
+
+            # 3. Add Travel Agency
             self.request("POST", TravelportEndpoints.WORKBENCH_TRAVEL_AGENCY.format(id=wb_id), json=agency_payload, custom_headers=custom_headers)
 
             # 4. Add Offer (AirOffer)
-            offer_payload = {
-                "OfferQueryBuildFromCatalogProductOfferings": {
-                    "BuildFromCatalogProductOfferingsRequest": {
-                        "CatalogProductOfferingSelection": [
-                            {
-                                "@type": "CatalogProductOfferingSelection",
-                                "CatalogProductOfferingIdentifier": {
-                                    "id": offer_id,
-                                    "Identifier": {
-                                        "authority": "Travelport",
-                                        "value": offer_id
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                }
-            }
-            if transaction_id:
-                offer_payload["OfferQueryBuildFromCatalogProductOfferings"]["transactionId"] = transaction_id
-                offer_payload["OfferQueryBuildFromCatalogProductOfferings"]["BuildFromCatalogProductOfferingsRequest"]["transactionId"] = transaction_id
-                
             self.request("POST", TravelportEndpoints.WORKBENCH_OFFERS.format(id=wb_id), json=offer_payload, custom_headers=custom_headers)
 
             # 5. Commit Workbench
@@ -464,15 +593,8 @@ class TravelportFlightService(TravelportBaseService):
             except Exception as commit_err:
                 err_str = str(commit_err)
                 if "4350" in err_str and "COMMIT OR IGNORE" in err_str:
-                    # The GDS session has a stale uncommitted workbench from a previous run.
-                    # Force a fresh HTTP Session to drop sticky cookies,
-                    # clear the redis token, and retry the entire flow once on the clean session.
-
                     with self._lock:
-                        # Drop HTTP cookies to escape sticky GDS session routing
                         self.session = create_http_session()
-                        
-                        # Evict the stale token from Redis so _refresh_token fetches a brand-new one
                         try:
                             redis_helper.delete_key(self.token_cache_key)
                         except Exception:
@@ -481,7 +603,6 @@ class TravelportFlightService(TravelportBaseService):
                         self._token_expiry = 0.0
                         self._refresh_token()
 
-                    # ── Retry on fresh session ──────────────────────────────────────────
                     wb_res2 = self.request("POST", TravelportEndpoints.WORKBENCH_CREATE, json=workbench_payload, custom_headers=custom_headers)
                     wb_id2 = wb_res2.get("ReservationResponse", {}).get("Reservation", {}).get("Identifier", {}).get("value")
                     if not wb_id2:
@@ -492,46 +613,8 @@ class TravelportFlightService(TravelportBaseService):
                         custom_headers["TravelportPlusSessionIdentifier"] = session_id2
 
                     try:
-                        for idx, pax in enumerate(booking_params.passengers):
-                            traveler_node = {
-                                "@type": "Traveler",
-                                "id": f"trav_{idx+1}",
-                                "passengerTypeCode": pax.passenger_type,
-                                "gender": pax.gender if pax.gender else "Unspecified",
-                                "birthDate": pax.date_of_birth,
-                                "PersonName": {
-                                    "@type": "PersonNameDetail",
-                                    "Given": pax.first_name,
-                                    "Surname": pax.last_name
-                                }
-                            }
-                            if pax.phone:
-                                traveler_node["Telephone"] = [{
-                                    "@type": "Telephone",
-                                    "countryAccessCode": "1",
-                                    "phoneNumber": pax.phone,
-                                    "id": f"phone_{idx+1}",
-                                    "cityCode": "ORD",
-                                    "role": "Home"
-                                }]
-                            if pax.email:
-                                traveler_node["Email"] = [{"value": pax.email}]
-                            if pax.document_number:
-                                traveler_node["TravelDocument"] = [{
-                                    "@type": "TravelDocumentDetail",
-                                    "docNumber": pax.document_number,
-                                    "docType": "Passport",
-                                    "expireDate": pax.document_expiry,
-                                    "issueCountry": pax.document_issue_country or "BD",
-                                    "birthDate": pax.date_of_birth,
-                                    "Gender": pax.gender if pax.gender else "Unspecified",
-                                    "PersonName": {
-                                        "@type": "PersonName",
-                                        "Given": pax.first_name,
-                                        "Surname": pax.last_name
-                                    }
-                                }]
-                            self.request("POST", TravelportEndpoints.WORKBENCH_TRAVELERS.format(id=wb_id2), json=traveler_node, custom_headers=custom_headers)
+                        for t_node in _build_traveler_nodes():
+                            self.request("POST", TravelportEndpoints.WORKBENCH_TRAVELERS.format(id=wb_id2), json=t_node, custom_headers=custom_headers)
 
                         self.request("POST", TravelportEndpoints.WORKBENCH_TRAVEL_AGENCY.format(id=wb_id2), json=agency_payload, custom_headers=custom_headers)
 
@@ -539,11 +622,9 @@ class TravelportFlightService(TravelportBaseService):
 
                         retry_res = self.request("POST", TravelportEndpoints.WORKBENCH_COMMIT.format(id=wb_id2), json=commit_payload, custom_headers=custom_headers)
                         return retry_res
-
                     except Exception as retry_err:
                         raise Exception(str(retry_err))
 
-                # If it was some other error, just raise it
                 raise commit_err
 
         except Exception as e:
