@@ -43,6 +43,7 @@ class AtPricingSnapshot(OtaDbBase):
     supplier_total          = Column(DECIMAL(18, 4), nullable=False, default=0.0000)   # Cost to OTA
     customer_total          = Column(DECIMAL(18, 4), nullable=False, default=0.0000)   # Charged to customer
     commission_total        = Column(DECIMAL(18, 4), nullable=False, default=0.0000)   # OTA earnings
+    tax_total               = Column(DECIMAL(18, 4), nullable=True, default=0.0000)
     
     created_at              = Column(TIMESTAMP, nullable=False, default=datetime.utcnow)
 

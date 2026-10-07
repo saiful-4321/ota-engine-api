@@ -64,6 +64,7 @@ class FlightPricingRequest(BaseModel):
     supplier: Optional[str] = Field(None, description="Optional supplier code (e.g. 'SABRE-BD-DAC') or provider key (e.g. 'sabre')")
 
 class AtBookingPassenger(BaseModel):
+    title: Optional[str] = None
     first_name: str
     last_name: str
     passenger_type: str = Field(..., description="ADT, CNN, INF")
@@ -73,7 +74,9 @@ class AtBookingPassenger(BaseModel):
     phone: Optional[str] = None
     document_number: Optional[str] = None # Passport or ID
     document_expiry: Optional[str] = None # YYYY-MM-DD
+    passport_expiry: Optional[str] = None # YYYY-MM-DD
     document_issue_country: Optional[str] = None # Country code
+    passport_issue_country: Optional[str] = None # Country code
     nationality: Optional[str] = None # Country code
 
 class FlightBookingRequest(BaseModel):

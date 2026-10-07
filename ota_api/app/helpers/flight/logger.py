@@ -1,7 +1,7 @@
 import uuid
 import datetime
 from decimal import Decimal
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from sqlalchemy import text
 
 from app.models.flight_schemas import (
@@ -340,7 +340,7 @@ def _build_journeys(segments: List[Dict[str, Any]], trip_type: Optional[str] = N
     # ONE_WAY, MULTI_CITY, or fallback: 1 journey per direction
     return [
         {
-            "direction": None,
+            "direction": "OUTBOUND",
             "origin": parsed[0]["origin"],
             "destination": parsed[-1]["destination"],
             "departure_date": parsed[0]["departure_at"].date() if parsed[0]["departure_at"] else datetime.date.today(),
@@ -434,14 +434,16 @@ def log_booking(
             )
             return
 
-        pnr = _find_pnr(response)
+        pnr, airline_pnr = _extract_pnrs(response)
+        if not pnr:
+            pnr = _find_pnr(response)
         if not pnr:
             write_log(f"Could not find PNR in response: {response}",
                       source="flight.logger.log_booking", type="warning")
             return
 
         # ── 3. Currency & conversion ─────────────────────────────────────
-        pi = request.price_info
+        pi = request.price_info or {}
         write_log(f"[log_booking] price_info received: {pi}",
                   source="flight.logger.log_booking", type="info")
 
@@ -449,7 +451,30 @@ def log_booking(
         conversion_rate = _get_conversion_rate(db, search_currency)
 
         prices = _extract_price_info(pi)
-        
+
+        # Enrich pricing breakdown from Travelport raw response if tax is 0 or base equals total
+        tp_reservation = response.get("ReservationResponse", {}).get("Reservation", {})
+        if tp_reservation:
+            tp_offers = tp_reservation.get("Offer", [])
+            if tp_offers and isinstance(tp_offers, list) and len(tp_offers) > 0:
+                tp_price = tp_offers[0].get("Price", {})
+                tp_base = tp_price.get("Base")
+                tp_tax = tp_price.get("TotalTaxes")
+                if tp_base is not None and tp_tax is not None:
+                    if not prices.get("tax") or prices.get("tax") == 0:
+                        prices["base"] = float(tp_base)
+                        prices["tax"] = float(tp_tax)
+                        tp_taxes = tp_price.get("TaxSummary", [])
+                        if tp_taxes and not prices.get("tax_breakdown"):
+                            prices["tax_breakdown"] = [
+                                {"code": t.get("taxCode") or "TAX", "amount": float(t.get("value") or 0)}
+                                for t in tp_taxes if isinstance(t, dict) and t.get("value")
+                            ]
+                        write_log(
+                            f"[log_booking] Enriched pricing from Travelport Offer: Base={tp_base}, Tax={tp_tax}",
+                            source="flight.logger.log_booking", type="info"
+                        )
+
         # Base and Tax
         base_fare       = convert_to_bdt(prices["base"],        search_currency, conversion_rate)
         tax_amount      = convert_to_bdt(prices["tax"],         search_currency, conversion_rate)
@@ -488,6 +513,8 @@ def log_booking(
         ttl = _find_ttl(response)
 
         booking = AtBooking(
+            code              = f"BK-{uuid.uuid4().hex[:10].upper()}",
+            uuid              = str(uuid.uuid4()),
             booking_reference = f"SN{uuid.uuid4().hex[:8].upper()}",
             user_id           = int(user_id) if user_id and str(user_id).isdigit() else None,
             supplier_id       = supplier_id,
@@ -496,6 +523,8 @@ def log_booking(
             journey_type      = journey_type,
             primary_pnr       = pnr,
             pnr               = pnr,       # Legacy field for backward compat
+            pnr_code          = pnr,       # Main field read by Laravel Backoffice
+            airline_pnr       = airline_pnr, # Airline locator (e.g. EK, AI, QR)
             supplier_booking_id = pnr,
             contact_email     = request.passengers[0].email if request.passengers and request.passengers[0].email else "",
             contact_phone     = request.passengers[0].phone if request.passengers and request.passengers[0].phone else "",
@@ -597,18 +626,22 @@ def log_booking(
             if ptype not in ("ADT", "CHD", "INF", "INS"):
                 ptype = "ADT"
 
+            doc_expiry = getattr(pax, "document_expiry", None) or getattr(pax, "passport_expiry", None)
+            doc_country = getattr(pax, "document_issue_country", None) or getattr(pax, "passport_issue_country", None)
+            pax_title = getattr(pax, "title", None)
+
             passenger = AtBookingPassenger(
                 booking_id     = booking.id,
                 type           = ptype,
                 is_lead        = 1 if pax_idx == 0 else 0,
-                title          = getattr(pax, "title", None),
+                title          = pax_title,
                 first_name     = pax.first_name,
                 last_name      = pax.last_name,
                 gender         = pax.gender,
                 dob            = _parse_date(pax.date_of_birth),
                 passport_no    = pax.document_number,
-                passport_expiry= _parse_date(getattr(pax, "document_expiry", None)),
-                issuing_country= getattr(pax, "document_issue_country", None),
+                passport_expiry= _parse_date(doc_expiry),
+                issuing_country= doc_country,
                 nationality    = getattr(pax, "nationality", None),
                 email          = pax.email,
                 phone          = pax.phone,
@@ -616,7 +649,7 @@ def log_booking(
                 # Legacy alias fields
                 passenger_type = ptype,
                 date_of_birth  = _parse_date(pax.date_of_birth),
-                passport_issuing_country = getattr(pax, "document_issue_country", None),
+                passport_issuing_country = doc_country,
             )
             db.add(passenger)
             passenger_objects.append(passenger)
@@ -642,6 +675,7 @@ def log_booking(
             supplier_total  = supplier_total,
             customer_total  = customer_total,
             commission_total = commission_amt,
+            tax_total        = tax_amount,
         )
         db.add(snapshot)
         db.flush()
@@ -1109,28 +1143,106 @@ def update_booking_status(
 # Private helpers
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _extract_pnrs(response: Any) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extracts (gds_pnr, airline_pnr) from supplier response.
+    Explicitly handles Travelport and Sabre schemas before generic fallback.
+    """
+    if not response or not isinstance(response, dict):
+        return None, None
+
+    gds_pnr = None
+    airline_pnr = None
+
+    # 1. Travelport Check: ReservationResponse -> Reservation -> Receipt
+    tp_res = response.get("ReservationResponse", {}).get("Reservation", {})
+    if tp_res:
+        receipts = tp_res.get("Receipt", [])
+        if isinstance(receipts, list):
+            for r in receipts:
+                if not isinstance(r, dict):
+                    continue
+                loc = r.get("Confirmation", {}).get("Locator", {})
+                if isinstance(loc, dict) and loc.get("value"):
+                    val = str(loc.get("value")).strip().upper()
+                    src = str(loc.get("source", "")).strip().upper()
+                    if src in ("1G", "1V", "1P"):
+                        if not gds_pnr:
+                            gds_pnr = val
+                    elif src:
+                        if not airline_pnr:
+                            airline_pnr = val
+
+        if not gds_pnr:
+            ident_val = tp_res.get("Identifier", {}).get("value")
+            if ident_val and isinstance(ident_val, str) and len(ident_val) == 6 and ident_val.isalnum():
+                gds_pnr = ident_val.upper()
+        if not gds_pnr:
+            loc_val = response.get("Locator", {}).get("value")
+            if loc_val and isinstance(loc_val, str) and len(loc_val) == 6 and loc_val.isalnum():
+                gds_pnr = loc_val.upper()
+
+        if gds_pnr:
+            return gds_pnr, airline_pnr
+
+    # 2. Sabre Check: CreatePassengerNameRecordRS -> ItineraryRef -> ID
+    sabre_rs = response.get("CreatePassengerNameRecordRS", {})
+    if sabre_rs:
+        itinerary_ref = sabre_rs.get("ItineraryRef", {})
+        if isinstance(itinerary_ref, dict) and itinerary_ref.get("ID"):
+            gds_pnr = str(itinerary_ref["ID"]).strip().upper()
+            return gds_pnr, airline_pnr
+
+    # 3. Generic Fallback
+    fallback_pnr = _find_pnr(response)
+    return fallback_pnr, airline_pnr
+
+
 def _find_pnr(res: Any) -> Optional[str]:
-    """Recursively search a response dict for a PNR (6-char alnum uppercase)."""
+    """
+    Recursively search a response dict for a PNR (6-char alnum uppercase).
+    STRICTLY ignores passenger name dicts to avoid names leaking as PNR.
+    """
     if not res:
         return None
-    if isinstance(res, str):
-        if len(res) == 6 and res.isalnum() and res.isupper():
-            return res
-        return None
+
+    SKIP_KEYS = {
+        "traveler", "travelers", "traveldocument", "personname", "passengers",
+        "passenger", "name", "given", "surname", "email", "phone", "telephone",
+        "contact", "address", "gender", "birthdate", "docnumber", "givenname", "sur_name"
+    }
+
     if isinstance(res, dict):
-        for key in ["ID", "pnr", "id", "bookingId", "confirmationId", "RecordLocator"]:
+        # Specific locator / PNR keys
+        for key in ["RecordLocator", "recordLocator", "Record_Locator", "Locator", "locator", "pnr", "PNR", "primary_pnr", "confirmationId", "bookingId", "ItineraryRef"]:
             val = res.get(key)
-            if val and isinstance(val, str) and len(val) == 6 and val.isalnum() and val.isupper():
-                return val
-        for v in res.values():
+            if isinstance(val, dict):
+                inner_val = val.get("value") or val.get("ID") or val.get("id")
+                if inner_val and isinstance(inner_val, str) and len(inner_val.strip()) == 6 and inner_val.strip().isalnum():
+                    return inner_val.strip().upper()
+            elif isinstance(val, str) and len(val.strip()) == 6 and val.strip().isalnum():
+                return val.strip().upper()
+
+        # ID or id key
+        for key in ["ID", "id"]:
+            val = res.get(key)
+            if val and isinstance(val, str) and len(val.strip()) == 6 and val.strip().isalnum() and val.strip().isupper():
+                if not any(sk in res for sk in ["passengerTypeCode", "birthDate", "gender", "docNumber"]):
+                    return val.strip()
+
+        for k, v in res.items():
+            if str(k).lower() in SKIP_KEYS:
+                continue
             found = _find_pnr(v)
             if found:
                 return found
+
     elif isinstance(res, list):
         for item in res:
             found = _find_pnr(item)
             if found:
                 return found
+
     return None
 
 def _find_pcc(res: Any) -> Optional[str]:
@@ -1158,7 +1270,7 @@ def _find_ttl(res: Any) -> Optional[datetime.datetime]:
     if not res:
         return None
     if isinstance(res, dict):
-        for key in ["ticketingTimeLimit", "TicketingTimeLimit", "timeLimit", "TimeLimit", "TKT_TimeLimit"]:
+        for key in ["ticketingTimeLimit", "TicketingTimeLimit", "timeLimit", "TimeLimit", "TKT_TimeLimit", "PaymentTimeLimit", "paymentTimeLimit", "ExpiryDate", "expiryDate", "PaymentTimeLimitAir"]:
             val = res.get(key)
             if val and isinstance(val, str):
                 return _parse_dt(val)
