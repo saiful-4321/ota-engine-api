@@ -38,6 +38,8 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
     """
     Parses Travelport JSON API v11 CatalogProductOfferingsResponse
     into the unified flightData schema expected by the OTA frontend.
+    Properly pairs combinable multi-journey (round-trip) offerings while
+    preserving one-way offerings seamlessly.
     """
     if not isinstance(travelport_response, dict):
         return travelport_response
@@ -85,15 +87,17 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
             for t in ref.get("TermsAndConditions", []):
                 terms_dict[t.get("id")] = t
 
-    formatted_flights = []
-
     trace_id = travelport_response.get("_trace_id", "")
-    root = travelport_response.get("CatalogProductOfferingsResponse", {})
     transaction_id = root.get("transactionId", "")
     cpo_id = root.get("CatalogProductOfferings", {}).get("Identifier", {}).get("value") or transaction_id
 
+    parsed_items = []
+
     for idx, off in enumerate(offerings):
         raw_offer_id = off.get("id", f"cpo_{idx}")
+        seq = off.get("sequence", 1)
+        dep_loc = off.get("Departure", "")
+        arr_loc = off.get("Arrival", "")
         options = off.get("ProductBrandOptions", [])
 
         for opt in options:
@@ -103,27 +107,18 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
                 continue
 
             for pbo in opt.get("ProductBrandOffering", []):
-                # Extract productRef for this specific flight offering option
                 prod_ref = "p0"
                 prods = pbo.get("Product", [])
                 if prods and isinstance(prods, list) and isinstance(prods[0], dict):
                     prod_ref = prods[0].get("productRef") or "p0"
 
-                top_c = flight_objs[0].get("carrier", "")
-                if trace_id and cpo_id:
-                    offer_id = f"{raw_offer_id}@@{trace_id}@@{cpo_id}@@{prod_ref}@@{top_c}"
-                elif trace_id:
-                    offer_id = f"{raw_offer_id}@@{trace_id}@@@@{prod_ref}@@{top_c}"
-                else:
-                    offer_id = raw_offer_id
+                comb_codes = pbo.get("CombinabilityCode", [])
                 price_detail = pbo.get("BestCombinablePrice", {})
                 total_price_num = price_detail.get("TotalPrice", 0)
                 base_fare = price_detail.get("Base", 0)
                 taxes = price_detail.get("TotalTaxes", 0)
                 currency = price_detail.get("CurrencyCode", {}).get("value", "BDT")
-                total_price_str = f"{currency} {total_price_num:,}"
 
-                # Baggage
                 baggage_summary = "20kg"
 
                 # Build segments
@@ -239,28 +234,177 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
                 pbo_content_src = str(pbo.get("ContentSource") or off.get("ContentSource") or "").upper()
                 is_ndc = ("NDC" in pbo_content_src)
 
-                formatted_flight = {
+                parsed_items.append({
+                    "raw_offer_id": raw_offer_id,
+                    "seq": seq,
+                    "dep_loc": dep_loc,
+                    "arr_loc": arr_loc,
+                    "prod_ref": prod_ref,
+                    "comb_codes": comb_codes,
+                    "price_detail": price_detail,
+                    "total_price_num": total_price_num,
+                    "base_fare": base_fare,
+                    "taxes": taxes,
+                    "currency": currency,
+                    "top_carrier": top_carrier,
+                    "top_airline_name": top_airline_name,
+                    "stops_list": stops_list,
+                    "baggage_summary": baggage_summary,
+                    "is_ndc": is_ndc,
+                    "leg": leg
+                })
+
+    formatted_flights = []
+
+    # Check if this search returned multiple journeys (e.g. sequence 1 and 2 for round-trip)
+    seq_set = sorted(list(set(it["seq"] for it in parsed_items if it.get("seq") is not None)))
+
+    # If sequence numbers are identical but routes are opposing, assign sequence 1 and 2
+    if len(seq_set) <= 1 and parsed_items:
+        first_route = (parsed_items[0]["dep_loc"], parsed_items[0]["arr_loc"])
+        for it in parsed_items:
+            cur_route = (it["dep_loc"], it["arr_loc"])
+            if cur_route != first_route and cur_route == (first_route[1], first_route[0]):
+                it["seq"] = 2
+            else:
+                it["seq"] = 1
+        seq_set = sorted(list(set(it["seq"] for it in parsed_items)))
+
+    if len(seq_set) >= 2:
+        # Multi-journey (Round-trip / Multi-city) pairing
+        s1_items = [it for it in parsed_items if it["seq"] == seq_set[0]]
+        s2_items = [it for it in parsed_items if it["seq"] == seq_set[1]]
+
+        from collections import defaultdict
+        comb_map_s1 = defaultdict(list)
+        comb_map_s2 = defaultdict(list)
+        for it in s1_items:
+            for c in it["comb_codes"]:
+                comb_map_s1[c].append(it)
+        for it in s2_items:
+            for c in it["comb_codes"]:
+                comb_map_s2[c].append(it)
+
+        shared_codes = sorted(list(set(comb_map_s1.keys()) & set(comb_map_s2.keys())))
+        seen_pairs = set()
+
+        for c in shared_codes:
+            for i1 in comb_map_s1[c]:
+                for i2 in comb_map_s2[c]:
+                    pair_key = (
+                        i1["raw_offer_id"], i2["raw_offer_id"],
+                        i1["prod_ref"], i2["prod_ref"],
+                        tuple(s["flightNumber"] for s in i1["leg"]["segments"]),
+                        tuple(s["flightNumber"] for s in i2["leg"]["segments"])
+                    )
+                    if pair_key in seen_pairs:
+                        continue
+                    seen_pairs.add(pair_key)
+
+                    if trace_id and cpo_id:
+                        offer_id = f"{i1['raw_offer_id']},{i2['raw_offer_id']}@@{trace_id}@@{cpo_id}@@{i1['prod_ref']},{i2['prod_ref']}@@{i1['top_carrier']}"
+                    elif trace_id:
+                        offer_id = f"{i1['raw_offer_id']},{i2['raw_offer_id']}@@{trace_id}@@@@{i1['prod_ref']},{i2['prod_ref']}@@{i1['top_carrier']}"
+                    else:
+                        offer_id = f"{i1['raw_offer_id']},{i2['raw_offer_id']}"
+
+                    price_det = i1["price_detail"] if i1["total_price_num"] > 0 else i2["price_detail"]
+                    total_price_num = price_det.get("TotalPrice", 0)
+                    base_fare = price_det.get("Base", 0)
+                    taxes = price_det.get("TotalTaxes", 0)
+                    currency = price_det.get("CurrencyCode", {}).get("value", "BDT")
+                    total_price_str = f"{currency} {total_price_num:,}"
+
+                    is_ndc = i1["is_ndc"] or i2["is_ndc"]
+                    top_c = i1["top_carrier"]
+                    top_name = i1["top_airline_name"]
+
+                    flight_dict = {
+                        "id": offer_id,
+                        "tripType": "round-trip",
+                        "airline": {
+                            "code": top_c,
+                            "name": top_name,
+                            "logo": f"https://pics.avs.io/al_sha/100/100/{top_c}.png" if top_c else ""
+                        },
+                        "departure": i1["leg"]["departure"],
+                        "arrival": i1["leg"]["arrival"],
+                        "duration": i1["leg"]["duration"],
+                        "price": total_price_str,
+                        "numericPrice": total_price_num,
+                        "baseFare": base_fare,
+                        "taxes": taxes,
+                        "currency": currency,
+                        "stops": i1["stops_list"],
+                        "journeyDate": i1["leg"]["departure"].get("date", ""),
+                        "isRefundable": True,
+                        "baggageSummary": i1["baggage_summary"] or i2["baggage_summary"] or "20kg",
+                        "seatsRemaining": 9,
+                        "validatingCarrier": top_c,
+                        "apiProvider": "Travelport",
+                        "api_provider": "travelport",
+                        "pcc": "3Q3I",
+                        "isNdc": is_ndc,
+                        "is_ndc": is_ndc,
+                        "fareType": "NDC" if is_ndc else "GDS",
+                        "fare_type": "NDC" if is_ndc else "GDS",
+                        "tags": ["NDC"] if is_ndc else [],
+                        "contentSource": "NDC" if is_ndc else "GDS",
+                        "legs": [i1["leg"], i2["leg"]]
+                    }
+                    formatted_flights.append(flight_dict)
+
+        # Fallback if no shared combinability codes: pair by matching carrier
+        if not formatted_flights:
+            carrier_map_s2 = defaultdict(list)
+            for it in s2_items:
+                carrier_map_s2[it["top_carrier"]].append(it)
+
+            for i1 in s1_items:
+                candidates = carrier_map_s2.get(i1["top_carrier"], s2_items)
+                if not candidates:
+                    continue
+                i2 = candidates[0]
+                if trace_id and cpo_id:
+                    offer_id = f"{i1['raw_offer_id']},{i2['raw_offer_id']}@@{trace_id}@@{cpo_id}@@{i1['prod_ref']},{i2['prod_ref']}@@{i1['top_carrier']}"
+                elif trace_id:
+                    offer_id = f"{i1['raw_offer_id']},{i2['raw_offer_id']}@@{trace_id}@@@@{i1['prod_ref']},{i2['prod_ref']}@@{i1['top_carrier']}"
+                else:
+                    offer_id = f"{i1['raw_offer_id']},{i2['raw_offer_id']}"
+
+                price_det = i1["price_detail"] if i1["total_price_num"] > 0 else i2["price_detail"]
+                total_price_num = price_det.get("TotalPrice", 0)
+                base_fare = price_det.get("Base", 0)
+                taxes = price_det.get("TotalTaxes", 0)
+                currency = price_det.get("CurrencyCode", {}).get("value", "BDT")
+                total_price_str = f"{currency} {total_price_num:,}"
+
+                is_ndc = i1["is_ndc"] or i2["is_ndc"]
+                top_c = i1["top_carrier"]
+                top_name = i1["top_airline_name"]
+
+                formatted_flights.append({
                     "id": offer_id,
-                    "tripType": "one-way",
+                    "tripType": "round-trip",
                     "airline": {
-                        "code": top_carrier,
-                        "name": top_airline_name,
-                        "logo": f"https://pics.avs.io/al_sha/100/100/{top_carrier}.png" if top_carrier else ""
+                        "code": top_c,
+                        "name": top_name,
+                        "logo": f"https://pics.avs.io/al_sha/100/100/{top_c}.png" if top_c else ""
                     },
-                    "departure": first_dep,
-                    "arrival": last_arr,
-                    "duration": overall_duration_str,
+                    "departure": i1["leg"]["departure"],
+                    "arrival": i1["leg"]["arrival"],
+                    "duration": i1["leg"]["duration"],
                     "price": total_price_str,
                     "numericPrice": total_price_num,
                     "baseFare": base_fare,
                     "taxes": taxes,
                     "currency": currency,
-                    "stops": stops_list,
-                    "journeyDate": first_dep.get("date", ""),
+                    "stops": i1["stops_list"],
+                    "journeyDate": i1["leg"]["departure"].get("date", ""),
                     "isRefundable": True,
-                    "baggageSummary": baggage_summary,
+                    "baggageSummary": i1["baggage_summary"] or i2["baggage_summary"] or "20kg",
                     "seatsRemaining": 9,
-                    "validatingCarrier": top_carrier,
+                    "validatingCarrier": top_c,
                     "apiProvider": "Travelport",
                     "api_provider": "travelport",
                     "pcc": "3Q3I",
@@ -270,9 +414,60 @@ def format_catalog_search_response(travelport_response: Dict[str, Any]) -> Dict[
                     "fare_type": "NDC" if is_ndc else "GDS",
                     "tags": ["NDC"] if is_ndc else [],
                     "contentSource": "NDC" if is_ndc else "GDS",
-                    "legs": [leg]
-                }
-                formatted_flights.append(formatted_flight)
+                    "legs": [i1["leg"], i2["leg"]]
+                })
+
+    # If single sequence (one-way) or still unformatted, emit as single-leg flights
+    if not formatted_flights:
+        for it in parsed_items:
+            top_c = it["top_carrier"]
+            if trace_id and cpo_id:
+                offer_id = f"{it['raw_offer_id']}@@{trace_id}@@{cpo_id}@@{it['prod_ref']}@@{top_c}"
+            elif trace_id:
+                offer_id = f"{it['raw_offer_id']}@@{trace_id}@@@@{it['prod_ref']}@@{top_c}"
+            else:
+                offer_id = it["raw_offer_id"]
+
+            total_price_num = it["total_price_num"]
+            base_fare = it["base_fare"]
+            taxes = it["taxes"]
+            currency = it["currency"]
+            total_price_str = f"{currency} {total_price_num:,}"
+            top_name = it["top_airline_name"]
+
+            formatted_flights.append({
+                "id": offer_id,
+                "tripType": "one-way",
+                "airline": {
+                    "code": top_c,
+                    "name": top_name,
+                    "logo": f"https://pics.avs.io/al_sha/100/100/{top_c}.png" if top_c else ""
+                },
+                "departure": it["leg"]["departure"],
+                "arrival": it["leg"]["arrival"],
+                "duration": it["leg"]["duration"],
+                "price": total_price_str,
+                "numericPrice": total_price_num,
+                "baseFare": base_fare,
+                "taxes": taxes,
+                "currency": currency,
+                "stops": it["stops_list"],
+                "journeyDate": it["leg"]["departure"].get("date", ""),
+                "isRefundable": True,
+                "baggageSummary": it["baggage_summary"],
+                "seatsRemaining": 9,
+                "validatingCarrier": top_c,
+                "apiProvider": "Travelport",
+                "api_provider": "travelport",
+                "pcc": "3Q3I",
+                "isNdc": it["is_ndc"],
+                "is_ndc": it["is_ndc"],
+                "fareType": "NDC" if it["is_ndc"] else "GDS",
+                "fare_type": "NDC" if it["is_ndc"] else "GDS",
+                "tags": ["NDC"] if it["is_ndc"] else [],
+                "contentSource": "NDC" if it["is_ndc"] else "GDS",
+                "legs": [it["leg"]]
+            })
 
     filters = _build_filters(formatted_flights)
 

@@ -289,24 +289,30 @@ class TravelportFlightService(TravelportBaseService):
                     val_carrier = str(c).strip().upper()
                     break
 
+        raw_offer_ids = [o.strip() for o in (offer_id or "o0").split(",") if o.strip()]
+        raw_prod_refs = [p.strip() for p in (prod_ref or "p0").split(",") if p.strip()]
+
+        selections = []
+        for i, oid in enumerate(raw_offer_ids):
+            pref = raw_prod_refs[i] if i < len(raw_prod_refs) else (raw_prod_refs[0] if raw_prod_refs else "p0")
+            selections.append({
+                "CatalogProductOfferingIdentifier": {
+                    "Identifier": {
+                        "value": oid
+                    }
+                },
+                "ProductIdentifier": [
+                    {
+                        "Identifier": {
+                            "value": pref
+                        }
+                    }
+                ]
+            })
+
         build_request: Dict[str, Any] = {
             "@type": "BuildFromCatalogProductOfferingsRequestAir",
-            "CatalogProductOfferingSelection": [
-                {
-                    "CatalogProductOfferingIdentifier": {
-                        "Identifier": {
-                            "value": offer_id or "o0"
-                        }
-                    },
-                    "ProductIdentifier": [
-                        {
-                            "Identifier": {
-                                "value": prod_ref or "p0"
-                            }
-                        }
-                    ]
-                }
-            ]
+            "CatalogProductOfferingSelection": selections
         }
         if cpo_id:
             build_request["CatalogProductOfferingsIdentifier"] = {
@@ -532,24 +538,30 @@ class TravelportFlightService(TravelportBaseService):
             }
         }
 
+        raw_offer_ids = [o.strip() for o in (offer_id or "o0").split(",") if o.strip()]
+        raw_prod_refs = [p.strip() for p in (prod_ref or "p0").split(",") if p.strip()]
+
+        selections = []
+        for i, oid in enumerate(raw_offer_ids):
+            pref = raw_prod_refs[i] if i < len(raw_prod_refs) else (raw_prod_refs[0] if raw_prod_refs else "p0")
+            selections.append({
+                "CatalogProductOfferingIdentifier": {
+                    "Identifier": {
+                        "value": oid
+                    }
+                },
+                "ProductIdentifier": [
+                    {
+                        "Identifier": {
+                            "value": pref
+                        }
+                    }
+                ]
+            })
+
         build_req: Dict[str, Any] = {
             "@type": "BuildFromCatalogProductOfferingsRequestAir",
-            "CatalogProductOfferingSelection": [
-                {
-                    "CatalogProductOfferingIdentifier": {
-                        "Identifier": {
-                            "value": offer_id or "o0"
-                        }
-                    },
-                    "ProductIdentifier": [
-                        {
-                            "Identifier": {
-                                "value": prod_ref or "p0"
-                            }
-                        }
-                    ]
-                }
-            ]
+            "CatalogProductOfferingSelection": selections
         }
         if cpo_id:
             build_req["CatalogProductOfferingsIdentifier"] = {
