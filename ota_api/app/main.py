@@ -68,6 +68,8 @@ for version in versions:
     
     if "FlightController" in controllers:
         app.include_router(controllers["FlightController"].router, prefix=f"/api/{version}/flights", tags=[f"Flights {version.upper()}"]) 
+    if "PassportController" in controllers:
+        app.include_router(controllers["PassportController"].router, prefix=f"/api/{version}/passport", tags=[f"Passport {version.upper()}"])
 
 # Processing job start
 # @app.on_event("startup")

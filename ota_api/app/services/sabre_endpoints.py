@@ -11,11 +11,14 @@ class SabreEndpoints:
 
     # AtBooking and Ticketing
     CREATE_PNR = "/v2.4.0/passenger/records"
+    UPDATE_PNR = "/v1.1.0/passenger/records?mode=update"
     ISSUE_TICKET = "/v1.3.0/air/ticket"
     GET_PNR_DETAILS = "/v1/trip/orders/getBooking"
     CANCEL_ITINERARY = "/v1/trip/orders/cancelBooking"
     VOID_TICKET = "/v1/trip/orders/voidFlightTickets"
-    EXCHANGE_TICKET = "/v1.3.0/air/ticket"
+    EXCHANGE_BOOKING = "/v1.1.0/exchange/booking"
+    CHECK_FLIGHT_TICKETS = "/v1/trip/orders/checkFlightTickets"
+    REFUND_FLIGHT_TICKETS = "/v1/trip/orders/refundFlightTickets"
 
     # Queues
     QUEUE_PLACE = "/v1/trip/orders/queue"

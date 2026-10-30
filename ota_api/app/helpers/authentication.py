@@ -1,8 +1,19 @@
+"""
+app/helpers/authentication.py
+
+Authentication for the /auth endpoints, in two parts:
+  1. Primitives — token creation/validation, login limits, FCM and session-token clean-up.
+  2. Endpoint workflows — login (with optional 2FA), session clean-up, token refresh and the
+     forgot-password OTP flow. Each returns the response body; AuthController only forwards it.
+"""
+
 from jose import JWTError, jwt
 from sqlalchemy import func
 from app.helpers.common import *
 from datetime import datetime, timedelta
-from app.helpers.password_utils import verify_password, hash_password
+from app.utils.password_utils import verify_password, hash_password
+from app.utils.formatting import format_date
+from app.utils.request_utils import get_client_ip
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from app.models.otadb.User import User as UserModel, UserRoleEnum
@@ -18,6 +29,25 @@ from redis import RedisError
 import random
 import string
 import time
+import base64
+import json
+from typing import Optional
+
+from fastapi import BackgroundTasks, status
+from sqlalchemy.orm import Session
+
+from app.helpers.password_policy import (
+    password_policy_settings, two_factor_policy_settings, validate_2fa_contact_info, validate_password_policy,
+)
+from app.models.otadb.AppVersion import AppVersion
+from app.models.otadb.ChangePasswordLogs import ChangePasswordLogs
+from app.models.otadb.Otp import OtpStatus
+from app.models.schemas import ForgotPasswordRequest, ResetForgetPasswordRequest, Verify2FAOtpRequest, VerifyOtpRequest
+from app.services.mail import MailFunctions
+from app.services.otp import OTPFunctions
+from app.utils.masking import mask_email, mask_phone
+from app.utils.sms_utils import send_sms
+from config import IS_EMAIL_ENABLED, IS_SMS_ENABLED, OTP_EXPIRES_TIME, SECRET_2FA
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
@@ -636,3 +666,395 @@ def remove_tokens_except_current(username: str, device: str, token: str, device_
     finally:
         if otadb:
             otadb.close()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Endpoint workflows (AuthController)
+# ═══════════════════════════════════════════════════════════════════════════
+
+OTP_SUBJECT = "One-Time Password (OTP)"
+INVALID_INFO_TOKEN = "Invalid information token."
+_PASSWORD_RESET_OTP_BODY = f"""
+            Please use the following OTP to proceed with resetting your password.<br><br>
+            This OTP is valid for the next <b>{OTP_EXPIRES_TIME}</b> minutes.<br><br>
+            If you did not request a password reset, please ignore this message or contact our support team.
+        """
+_TWO_FACTOR_OTP_BODY = f"""
+                        Please use the following OTP to proceed with two factor authentication.<br><br>
+                        This OTP is valid for the next <b>{OTP_EXPIRES_TIME}</b> minutes.<br><br>"""
+
+
+# ── Lookups ──────────────────────────────────────────────────────────────────
+
+def _find_user(otadb: Session, username: str, active_only: bool = True, oldest_first: bool = False):
+    query = otadb.query(UserModel).filter(func.lower(UserModel.username) == username.lower())
+    if active_only:
+        query = query.filter(UserModel.account_status == "active")
+    if oldest_first:
+        query = query.order_by(UserModel.id.asc())
+    return query.first()
+
+
+# ── 2FA information token ────────────────────────────────────────────────────
+# The login context is carried between /login and /verify-2fa-otp in an XOR-obfuscated token.
+
+def _xor(data: bytes) -> bytes:
+    key_bytes = SECRET_2FA.encode("utf-8")
+    return bytes(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(data))
+
+
+def encode_info_token(activity: dict) -> str:
+    json_bytes = json.dumps(activity, separators=(',', ':'), sort_keys=True).encode('utf-8')
+    return base64.b64encode(_xor(json_bytes)).decode('utf-8')
+
+
+def decode_info_token(info_token: str) -> dict:
+    return json.loads(_xor(base64.b64decode(info_token.encode("utf-8"))).decode("utf-8"))
+
+
+# ── OTP delivery ─────────────────────────────────────────────────────────────
+
+def _send_otp_email(background_tasks: BackgroundTasks, user, otp, body: str) -> None:
+    button = {"text": "OTP: " + str(otp), "link": "#"}
+    mail_functions = MailFunctions(recipient_email=user.email, subject=OTP_SUBJECT, body=body, userInfo=user, button=button)
+    background_tasks.add_task(mail_functions.send_email)
+
+
+def _two_factor_channel_error(otp_sending_option: str, user) -> Optional[str]:
+    """Why the OTP cannot be delivered on the user's chosen channel, or None."""
+    if not IS_EMAIL_ENABLED and not IS_SMS_ENABLED:
+        return NO_EMAIL_SMS_SERVICE
+    if otp_sending_option == 'email' and not IS_EMAIL_ENABLED:
+        return TWO_FA_EMAIL_SERVICE_NOT_ENABLED if user.email else TWO_FA_EMAIL_SERVICE_NOT_ENABLED_FOUND
+    if otp_sending_option == 'mobile' and not IS_SMS_ENABLED:
+        return TWO_FA_SMS_SERVICE_NOT_ENABLED if user.phone else TWO_FA_SMS_SERVICE_NOT_ENABLED_FOUND
+    has_error, message = validate_2fa_contact_info(otp_sending_option, user, IS_EMAIL_ENABLED, IS_SMS_ENABLED)
+    return message if has_error else None
+
+
+def _send_two_factor_otp(background_tasks: BackgroundTasks, user, otp, otp_sending_option: str) -> list:
+    """Sends the 2FA OTP; returns the masked channels it went to."""
+    sent_channels = []
+    if otp_sending_option in ('both', 'email') and IS_EMAIL_ENABLED and user.email:
+        sent_channels.append(mask_email(user.email))
+        _send_otp_email(background_tasks, user, otp, _TWO_FACTOR_OTP_BODY)
+    if otp_sending_option in ('both', 'mobile') and IS_SMS_ENABLED and user.phone:
+        sent_channels.append(mask_phone(user.phone))
+        send_sms({
+            "phone": user.phone,
+            "message": f"Please use the following otp for two factor authentication.\n OTP: {otp}",
+        })
+    return sent_channels
+
+
+# ── Login ────────────────────────────────────────────────────────────────────
+
+def build_login_activity(request: Request, device: str, device_id: Optional[str], os: Optional[str],
+                         browser: Optional[str], location: Optional[str]) -> dict:
+    return {
+        "device": device,
+        "os": os,
+        "browser": browser,
+        "location": location,
+        "ip": request.client.host,
+        "device_id": device_id,
+        "limit_notification": True,
+    }
+
+
+async def _complete_login(user, request: Request, activity: dict, fcm_token: Optional[str],
+                          background_tasks: BackgroundTasks) -> dict:
+    """Issues the tokens once the user is authenticated (and 2FA passed), within the login limits."""
+    if fcm_token:
+        background_tasks.add_task(register_fcm_token, username=user.username, fcm_token=fcm_token)
+    login_limit = handle_login_limit(user=user, request=request, activity=activity)
+    if login_limit['status'] != True:
+        return common_response(login_limit['code'], login_limit['message'])
+    response = await get_user_token(user=user, additionalInfo=activity)
+    response.update(await password_policy_settings(user))
+    return common_response(status.HTTP_200_OK, SUCCESS, response)
+
+
+def _two_factor_challenge(user, activity: dict, fcm_token: Optional[str], two_factor_response: dict,
+                          background_tasks: BackgroundTasks, otadb: Session) -> dict:
+    """Sends the 2FA OTP and answers 206 with the info_token needed by /verify-2fa-otp."""
+    two_factor_response.pop('two_factor_auth_enabled')
+    otp_sending_option = two_factor_response.pop('otp_sending_option')
+    activity['username'] = user.username
+    activity['fcm_token'] = fcm_token
+    two_factor_response['info_token'] = encode_info_token(activity)
+
+    channel_error = _two_factor_channel_error(otp_sending_option, user)
+    if channel_error:
+        return common_response(status.HTTP_400_BAD_REQUEST, channel_error, two_factor_response)
+
+    otp_result = OTPFunctions(otadb).create_otp(user)
+    if otp_result['status'] not in (201, 409):
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, otp_result['message'], two_factor_response)
+
+    sent_channels = _send_two_factor_otp(background_tasks, user, otp_result['otp'], otp_sending_option)
+    if not sent_channels:
+        message = "Two factor authentication is enabled, but no valid delivery channel is available."
+        return common_response(status.HTTP_400_BAD_REQUEST, message, two_factor_response)
+    message = "An OTP was sent to your " + " and ".join(sent_channels) + "."
+    return common_response(status.HTTP_206_PARTIAL_CONTENT, message, two_factor_response)
+
+
+async def login(request: Request, background_tasks: BackgroundTasks, otadb: Session, username: str,
+                password: str, activity: dict, fcm_token: Optional[str]) -> dict:
+    try:
+        user_auth = authenticate_user(username, password, user=None)
+        if user_auth['status'] != 200:
+            return common_response(user_auth['status'], user_auth['message'])
+        user = user_auth['user']
+
+        two_factor_response = await two_factor_policy_settings(user)
+        if two_factor_response['two_factor_auth_enabled'] and user.is_2fa_enabled:
+            return _two_factor_challenge(user, activity, fcm_token, two_factor_response, background_tasks, otadb)
+        return await _complete_login(user, request, activity, fcm_token, background_tasks)
+    except Exception as e:
+        write_log(get_error_info(e), "login")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+
+
+async def verify_two_factor_otp(request: Request, input: Verify2FAOtpRequest, background_tasks: BackgroundTasks,
+                                otadb: Session) -> dict:
+    try:
+        if not input.info_token:
+            return common_response(status.HTTP_401_UNAUTHORIZED, INVALID_INFO_TOKEN)
+        try:
+            activity = decode_info_token(input.info_token)
+        except Exception as e:
+            write_log(get_error_info(e), "verify-2fa-otp")
+            return common_response(status.HTTP_401_UNAUTHORIZED, INVALID_INFO_TOKEN)
+
+        activity['limit_notification'] = False
+        username_from_token = activity.pop("username", None)
+
+        user = _find_user(otadb, username_from_token)
+        if not user:
+            return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
+
+        valid_otp = OTPFunctions(otadb).check_otp_validity(input.otp, user.id)
+        if not valid_otp:
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, INVALID_OTP)
+        valid_otp.status = OtpStatus.Verified
+        otadb.commit()
+
+        fcm_token = activity.pop("fcm_token", None)
+        return await _complete_login(user, request, activity, fcm_token, background_tasks)
+    except Exception as e:
+        write_log(get_error_info(e), "verify-2fa-otp")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+    finally:
+        otadb.close()
+
+
+def get_app_version(otadb: Session) -> dict:
+    try:
+        appversion = otadb.query(AppVersion).order_by(AppVersion.id.desc()).first()
+        return common_response(status.HTTP_200_OK, SUCCESS, appversion)
+    except Exception as e:
+        write_log(get_error_info(e), "app-version")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+
+
+# ── Sessions & tokens ────────────────────────────────────────────────────────
+
+def _clear_exceeded_sessions(db_user, device: str):
+    """
+    Counts this login attempt and, if it would exceed a limit, removes the affected sessions.
+    Returns (message, error_response).
+    """
+    is_mobile = device.lower() == UserDevices.MOBILE.value.lower()
+    if is_mobile:
+        db_user.logged_in_mobile += 1
+    else:
+        db_user.logged_in_web += 1
+    db_user.total_logged_in = db_user.logged_in_web + db_user.logged_in_mobile
+
+    if db_user.total_logged_in > db_user.total_max_login:
+        result = remove_tokens(username=db_user.username, device='all')
+        if not result['status']:
+            return None, common_response(result['code'], result['message'])
+        db_user.logged_in_web = 0
+        db_user.logged_in_mobile = 0
+        db_user.total_logged_in = 0
+        return 'All sessions removed', None
+
+    if db_user.logged_in_web > db_user.max_login_web:
+        result = remove_tokens(username=db_user.username, device=UserDevices.DESKTOP)
+        if not result['status']:
+            return None, common_response(result['code'], result['message'])
+        db_user.logged_in_web = 0
+        db_user.total_logged_in = max(db_user.logged_in_mobile, 0)
+        return f'All {device} sessions removed', None
+
+    if db_user.logged_in_mobile > db_user.max_login_mobile:
+        result = remove_tokens(username=db_user.username, device=UserDevices.MOBILE)
+        if not result['status']:
+            return None, common_response(result['code'], result['message'])
+        db_user.logged_in_mobile = 0
+        db_user.total_logged_in = max(db_user.logged_in_web, 0)
+        return f'All {device} session removed', None
+
+    # No limit exceeded: undo the count
+    if is_mobile:
+        db_user.logged_in_mobile -= 1
+    else:
+        db_user.logged_in_web -= 1
+    db_user.total_logged_in = db_user.logged_in_web + db_user.logged_in_mobile
+    return f"Max session not exceeded for {device}. No session was removed.", None
+
+
+def remove_session(otadb: Session, username: str, password: str, device: str) -> dict:
+    try:
+        db_user = otadb.query(UserModel).filter(UserModel.username == username).first()
+        if not db_user:
+            return common_response(status.HTTP_404_NOT_FOUND, "User not found")
+
+        user_auth = authenticate_user(username, password, user=db_user)
+        if user_auth['status'] != 200:
+            return common_response(user_auth['status'], user_auth['message'])
+
+        message, error = _clear_exceeded_sessions(db_user, device)
+        if error:
+            return error
+        otadb.commit()
+        return common_response(status.HTTP_200_OK, message)
+    except Exception as e:
+        otadb.rollback()
+        write_log(get_error_info(e), "remove-session")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+    finally:
+        if otadb:
+            otadb.close()
+
+
+async def refresh_access_token(otadb: Session, refresh_token: Optional[str], device: str, device_id: Optional[str]):
+    try:
+        if refresh_token is None:
+            return common_response(status.HTTP_401_UNAUTHORIZED, INVALID_REFRESH_TOKEN)
+        if refresh_token.lower().startswith("bearer "):
+            refresh_token = refresh_token[7:].strip()
+
+        payload = await token_validation(token=refresh_token, refresh_token=True)
+        if payload is None:
+            return common_response(status.HTTP_401_UNAUTHORIZED, INVALID_REFRESH_TOKEN)
+        user = _find_user(otadb, payload['username'], oldest_first=True)
+        if not user:
+            return common_response(status.HTTP_401_UNAUTHORIZED, INCORRECT_USERNAME_OR_PASS)
+
+        return await get_user_token(user, additionalInfo={"device": device, "device_id": device_id}, token_only=True)
+    except Exception as e:
+        write_log(get_error_info(e), "refresh-token")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR, e)
+    finally:
+        otadb.close()
+
+
+# ── Forgot password ──────────────────────────────────────────────────────────
+
+def forgot_password(request: ForgotPasswordRequest, background_tasks: BackgroundTasks, otadb: Session) -> dict:
+    try:
+        user = _find_user(otadb, request.username, active_only=False, oldest_first=True)
+        if not user:
+            return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
+        if not user.email:
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, WE_COULD_NOT_FOUND_YOUR_EMAIL)
+
+        otp_result = OTPFunctions(otadb).create_otp(user)
+        if otp_result['status'] not in (201, 409):
+            return common_response(otp_result['status'], otp_result['message'])
+
+        _send_otp_email(background_tasks, user, otp_result['otp'], _PASSWORD_RESET_OTP_BODY)
+        if user.phone and int(IS_SMS_ENABLED):
+            send_sms({
+                "phone": user.phone,
+                "message": f"Please use the following otp to reset your password. This OTP is valid for the next {OTP_EXPIRES_TIME} minutes.\n OTP: {otp_result['otp']}",
+            })
+        return common_response(status.HTTP_200_OK, OTP_SEND_TO_EMAIL_PHONE)
+    except Exception as e:
+        write_log(get_error_info(e), "forgot-password")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+    finally:
+        otadb.close()
+
+
+def resend_otp(request: ForgotPasswordRequest, background_tasks: BackgroundTasks, otadb: Session) -> dict:
+    try:
+        user = _find_user(otadb, request.username, oldest_first=True)
+        if not user:
+            return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
+        if not user.email:
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, WE_COULD_NOT_FOUND_YOUR_EMAIL)
+
+        otp_functions = OTPFunctions(otadb)
+        if not otp_functions.can_regenerate_otp(user.id):
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, CANNOT_GENERATE_OTP)
+        otp_result = otp_functions.create_otp(user)
+        if otp_result['status'] not in (201, 409):
+            return common_response(otp_result['status'], otp_result['message'])
+
+        _send_otp_email(background_tasks, user, otp_result['otp'], _PASSWORD_RESET_OTP_BODY)
+        if user.phone and int(IS_SMS_ENABLED):
+            send_sms({
+                "phone": user.phone,
+                "message": f"Please use the following otp to reset your password.\n otp: {otp_result['otp']}",
+            })
+        return common_response(status.HTTP_200_OK, OTP_SEND_TO_EMAIL_PHONE)
+    except Exception as e:
+        write_log(get_error_info(e), "resend-otp")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+    finally:
+        otadb.close()
+
+
+def verify_otp(request: VerifyOtpRequest, otadb: Session) -> dict:
+    try:
+        user = _find_user(otadb, request.username)
+        if not user:
+            return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
+
+        valid_otp = OTPFunctions(otadb).check_otp_validity(request.otp, user.id)
+        if not valid_otp:
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, INVALID_OTP)
+
+        valid_otp.status = OtpStatus.Verified
+        otadb.commit()
+        return common_response(status.HTTP_200_OK, OTP_VERIFIED)
+    except Exception as e:
+        write_log(get_error_info(e), "verify-otp")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+    finally:
+        otadb.close()
+
+
+async def reset_forgot_password(request: ResetForgetPasswordRequest, otadb: Session) -> dict:
+    try:
+        user = _find_user(otadb, request.username)
+        if not user:
+            return common_response(status.HTTP_404_NOT_FOUND, USER_NOT_FOUND)
+        if request.password != request.confirm_password:
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, CONFIRM_PASSWORD_NOT_METCHED)
+        policy_errors = await validate_password_policy(request.password)
+        if policy_errors:
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, policy_errors)
+        if not OTPFunctions(otadb).check_verified_otp_validity(user.id):
+            return common_response(status.HTTP_422_UNPROCESSABLE_ENTITY, SESSION_EXPIRED)
+
+        user.password = hash_password(request.password)
+        otadb.add(ChangePasswordLogs(username=user.username, password=user.password, changed_by=user.username))
+        remove_tokens(username=user.username, device='all')
+
+        user.first_login = False
+        user.logged_in_web = 0
+        user.logged_in_mobile = 0
+        user.total_logged_in = 0
+
+        otadb.commit()
+        return common_response(status.HTTP_200_OK, PASSWORD_UPDATED)
+    except Exception as e:
+        write_log(get_error_info(e), "reset-forgot-password")
+        return common_response(status.HTTP_500_INTERNAL_SERVER_ERROR, INTERNAL_SERVER_ERROR)
+    finally:
+        otadb.close()

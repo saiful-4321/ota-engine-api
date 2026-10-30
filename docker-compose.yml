@@ -18,9 +18,12 @@ services:
       - APP_ENV=LOCAL
       - MQTT_HOST=ota_mqtt
       - MQTT_PORT=1883
+      - PASSPORT_OCR_URL=http://passport_ocr:7800
+      - PASSPORT_OCR_API_KEY=${PASSPORT_OCR_API_KEY:-change_me_ocr_key}
     depends_on:
       - ota_redis
       - ota_mqtt
+      - passport_ocr
 
   ota_websocket:
     container_name: ota_websocket
@@ -39,6 +42,28 @@ services:
       - REDIS_CHANNEL=ota-broadcast
     depends_on:
       - ota_redis
+    networks:
+      - default
+
+  passport_ocr:
+    container_name: passport_ocr
+    build: ./passport_ocr_service
+    # Internal only: reachable by ota_api on the Docker network, never from the internet.
+    # The 127.0.0.1 binding allows local testing on this machine only; remove it in production.
+    expose:
+      - "7800"
+    ports:
+      - "127.0.0.1:7800:7800"
+    restart: unless-stopped
+    environment:
+      - API_KEY=${PASSPORT_OCR_API_KEY:-change_me_ocr_key}
+      - MAX_UPLOAD_MB=10
+      - OCR_TIMEOUT_S=20
+      - WORKERS=2
+      - DOCS_ENABLED=false
+    read_only: true
+    tmpfs:
+      - /tmp
     networks:
       - default
 

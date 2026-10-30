@@ -9,16 +9,24 @@ from app.services.supplier_config_service import SupplierConfigService, Supplier
 from app.utils.redis_utils import redis_helper
 from app.helpers.common import write_log
 from app.services.supplier_token_service import SupplierTokenService
+from app.utils.flight.errors import SupplierError
 
 
 def create_http_session() -> requests.Session:
     session = requests.Session()
 
+    # Only connection failures (request never reached the supplier) are retried for every
+    # method. Read timeouts and 5xx responses are retried for GET only: retrying a POST
+    # that may already have been processed can create duplicate PNRs, tickets or refunds.
     retry_strategy = Retry(
-        total=5,
+        total=3,
+        connect=3,
+        read=0,
+        status=2,
         backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["POST", "GET", "PUT", "DELETE"]
+        status_forcelist=[429, 502, 503, 504],
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
     )
 
     adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -53,9 +61,9 @@ class TravelportAuthService:
         }
 
         try:
-            write_log(f"Travelport Auth Request: POST {url} | Data: {data}", source="travelport_auth", type="info")
+            write_log(f"Travelport Auth Request: POST {url} | username={self.config.username}", source="travelport_auth", type="info")
             response = self.session.post(url, headers=headers, data=data, timeout=15)
-            write_log(f"Travelport Auth Response: {response.status_code} | Body: {response.text}", source="travelport_auth", type="info")
+            write_log(f"Travelport Auth Response: {response.status_code}", source="travelport_auth", type="info")
 
             if response.status_code != 200:
                 raise Exception(
@@ -249,7 +257,7 @@ class TravelportBaseService:
                 pass
 
             if response.status_code >= 400 or err_detail:
-                raise Exception(
+                raise SupplierError(
                     f"Travelport API Error {response.status_code}{err_detail} | {response.text}"
                 )
 
@@ -258,7 +266,15 @@ class TravelportBaseService:
                 res_data["_headers"] = dict(response.headers)
             return res_data
 
+        except requests.exceptions.ReadTimeout as e:
+            if method.upper() == "GET":
+                raise SupplierError(f"Travelport API Call Failed | {method} {url} | timed out")
+            # The request reached Travelport; it may have been processed (commit, ticket, refund)
+            raise SupplierError(
+                f"Travelport API Call Failed | {method} {url} | no response in time — the outcome is UNKNOWN. "
+                f"Retrieve the reservation before retrying. ({e})"
+            )
         except Exception as e:
             if "Travelport API Call Failed" in str(e):
                 raise
-            raise Exception(f"Travelport API Call Failed | {method} {url} | {str(e)}")
+            raise SupplierError(f"Travelport API Call Failed | {method} {url} | {str(e)}")

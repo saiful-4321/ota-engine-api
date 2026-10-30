@@ -14,11 +14,18 @@ from app.services.sabre_endpoints import SabreEndpoints
 def create_http_session() -> requests.Session:
     session = requests.Session()
 
+    # Only connection failures (request never reached the supplier) are retried for every
+    # method. Read timeouts and 5xx responses are retried for GET only: retrying a POST
+    # that may already have been processed can create duplicate PNRs, tickets or refunds.
     retry_strategy = Retry(
-        total=5,
+        total=3,
+        connect=3,
+        read=0,
+        status=2,
         backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["POST", "GET"]
+        status_forcelist=[429, 502, 503, 504],
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
     )
 
     adapter = HTTPAdapter(max_retries=retry_strategy)

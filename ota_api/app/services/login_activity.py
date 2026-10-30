@@ -1,5 +1,6 @@
 # app.services.login_activity.py
 from app.helpers.common import *
+from app.utils.formatting import format_date
 from app.models.otadb.LoginActivity import LoginActivity
 
 def get_user_roles():

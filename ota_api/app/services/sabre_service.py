@@ -5,8 +5,13 @@ from app.services.sabre_auth_service import SabreBaseService
 from app.models.flight_schemas import (
     FlightSearchRequest, FlightPricingRequest, FlightBookingRequest, TicketingRequest,
     PNRDetailsRequest, CancelItineraryRequest, VoidTicketRequest, ExchangeTicketRequest,
+    ExchangeQuoteRequest, RefundQuoteRequest, RefundTicketRequest,
     SeatMapRequest, BaggageAllowanceRequest, QueueRequest, FareRulesRequest
 )
+from app.utils.flight.errors import (
+    SupplierError, PriceChangedError, PartialExchangeError,
+)
+from app.helpers.common import write_log
 import datetime
 from app.services.sabre_endpoints import SabreEndpoints
 from typing import Optional, Dict, Any
@@ -322,25 +327,215 @@ def _parse_sabre_segment(segment: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _to_float(val: Any) -> float:
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _as_list(val: Any) -> list:
+    if val is None:
+        return []
+    return val if isinstance(val, list) else [val]
+
+
+def _find_all(obj: Any, key: str) -> list:
+    """Collects every value stored under `key` anywhere in a nested dict/list."""
+    found = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == key:
+                found.append(v)
+            found.extend(_find_all(v, key))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.extend(_find_all(item, key))
+    return found
+
+
+def extract_sabre_price_quote(res_data: dict) -> dict:
+    """
+    Extracts the stored price quote totals from a CreatePassengerNameRecordRS / UpdatePassengerNameRecordRS
+    (AirPrice with Retain=true).
+
+    Returns: total_fare, base_fare, tax_amount, currency, quote_numbers
+    (total_fare is 0 when no priced itinerary is present).
+    """
+    pricing = {"total_fare": 0.0, "base_fare": 0.0, "tax_amount": 0.0, "currency": None, "quote_numbers": []}
+    res_data = res_data or {}
+    rs = res_data.get("CreatePassengerNameRecordRS") or res_data.get("UpdatePassengerNameRecordRS") or {}
+
+    for air_price in _as_list(rs.get("AirPrice")):
+        for pq in _as_list(air_price.get("PriceQuote")):
+            rph = pq.get("RPH") or pq.get("Number")
+            if rph and str(rph).isdigit():
+                pricing["quote_numbers"].append(int(rph))
+
+            for pit in _as_list(pq.get("PricedItinerary")) or _as_list(air_price.get("PricedItinerary")):
+                total = _to_float(pit.get("TotalAmount"))
+                base = tax = 0.0
+                for info in _as_list(pit.get("AirItineraryPricingInfo")):
+                    qty = int(_to_float((info.get("PassengerTypeQuantity") or {}).get("Quantity")) or 1)
+                    itin = info.get("ItinTotalFare") or {}
+                    # EquivFare is the base fare in the ticketing currency when filed in another currency
+                    base_node = itin.get("EquivFare") or itin.get("BaseFare") or {}
+                    base += _to_float(base_node.get("Amount")) * qty
+                    tax += _to_float((itin.get("Taxes") or {}).get("TotalAmount")) * qty
+                    if not total:
+                        total += _to_float((itin.get("TotalFare") or {}).get("Amount")) * qty
+                    pricing["currency"] = pricing["currency"] or (itin.get("TotalFare") or {}).get("CurrencyCode")
+                pricing["total_fare"] += total
+                pricing["base_fare"] += base
+                pricing["tax_amount"] += tax
+                pricing["currency"] = pit.get("CurrencyCode") or pricing["currency"]
+
+    if pricing["total_fare"] and not pricing["tax_amount"] and pricing["base_fare"]:
+        pricing["tax_amount"] = round(pricing["total_fare"] - pricing["base_fare"], 2)
+    pricing["total_fare"] = round(pricing["total_fare"], 2)
+    pricing["base_fare"] = round(pricing["base_fare"], 2)
+    pricing["tax_amount"] = round(pricing["tax_amount"], 2)
+    return pricing
+
+
+def _sabre_messages(app_results: dict) -> list:
+    """Error and warning texts from a Sabre ApplicationResults node."""
+    out = []
+    for section in ("Error", "Warning"):
+        for item in _as_list(app_results.get(section)):
+            for sys_res in _as_list((item or {}).get("SystemSpecificResults")):
+                for msg in _as_list((sys_res or {}).get("Message")):
+                    text = str((msg or {}).get("content") or (msg or {}).get("value") or "").replace("\u0087", "").replace("‡", "").strip()
+                    if text and text not in out:
+                        out.append(text)
+    return out
+
+
+def _is_active_fare(fare: dict) -> bool:
+    status = str(fare.get("pricingStatusCode") or fare.get("pricingStatusName") or "A").upper()
+    return status in ("A", "ACTIVE")
+
+
+def extract_booking_fares(booking: dict) -> dict:
+    """
+    Reads the stored price quotes from a Booking Management getBooking response (`fares`, one entry
+    per active PQ, referenced by `recordId`).
+
+    When a PNR holds several PQs for the same travellers (e.g. after a reprice), only the newest one
+    per traveller group is kept, so tickets are never issued twice for the same passenger.
+
+    Returns: total_fare, base_fare, tax_amount, currency, quote_numbers (empty when no active PQ).
+    """
+    data = (booking or {}).get("trip", booking or {})
+    latest: Dict[tuple, dict] = {}
+    for fare in _as_list(data.get("fares")):
+        if not isinstance(fare, dict) or not _is_active_fare(fare):
+            continue
+        group = tuple(fare.get("travelerIndices") or [fare.get("requestedTravelerType") or fare.get("pricedTravelerType")])
+        rid = int(_to_float(fare.get("recordId")) or 0)
+        if group not in latest or rid > int(_to_float(latest[group].get("recordId")) or 0):
+            latest[group] = fare
+
+    pricing = {"total_fare": 0.0, "base_fare": 0.0, "tax_amount": 0.0, "currency": None, "quote_numbers": []}
+    for fare in latest.values():
+        totals = fare.get("totals") or {}
+        travellers = len(fare.get("travelerIndices") or []) or 1
+        pricing["total_fare"] += _to_float(totals.get("total")) * travellers
+        pricing["base_fare"] += _to_float(totals.get("subtotal")) * travellers
+        pricing["tax_amount"] += _to_float(totals.get("taxes")) * travellers
+        pricing["currency"] = pricing["currency"] or totals.get("currencyCode")
+        if fare.get("recordId") is not None:
+            pricing["quote_numbers"].append(int(_to_float(fare["recordId"])))
+
+    # With exactly one PQ per traveller group, Sabre's own grand total is authoritative
+    flight_totals = _as_list((data.get("payments") or {}).get("flightTotals"))
+    if flight_totals and len(latest) == len([f for f in _as_list(data.get("fares")) if isinstance(f, dict) and _is_active_fare(f)]):
+        ft = flight_totals[0] if isinstance(flight_totals[0], dict) else {}
+        if _to_float(ft.get("total")):
+            pricing["total_fare"] = _to_float(ft.get("total"))
+            pricing["base_fare"] = _to_float(ft.get("subtotal")) or pricing["base_fare"]
+            pricing["tax_amount"] = _to_float(ft.get("taxes")) or pricing["tax_amount"]
+            pricing["currency"] = ft.get("currencyCode") or pricing["currency"]
+
+    pricing["quote_numbers"].sort()
+    for key in ("total_fare", "base_fare", "tax_amount"):
+        pricing[key] = round(pricing[key], 2)
+    return pricing
+
+
+def _validating_carrier_qualifier(carrier: Optional[str]) -> dict:
+    """
+    AirPrice OptionalQualifiers entry forcing the validating (plating) carrier — the WPC override.
+    CreatePassengerNameRecordRQ v2.4.0 has no `ValidatingCarrier` property; the carrier goes in
+    FlightQualifiers.VendorPrefs.Airline. Binds the stored PQ to a carrier this PCC can ticket on.
+    """
+    code = str(carrier or "").strip().upper()
+    if not code:
+        return {}
+    return {"FlightQualifiers": {"VendorPrefs": {"Airline": {"Code": code}}}}
+
+
+def _sabre_ptc(ptc: Optional[str]) -> str:
+    ptc = str(ptc or "ADT").upper()
+    return "CNN" if ptc == "CHD" else ptc
+
+
 class SabreFlightService(SabreBaseService):
 
-
-    
     def __init__(self, config: Optional[SupplierConfig] = None):
         super().__init__(config=config)
 
-    
+    # ── HTTP ─────────────────────────────────────────────────────────────────
+
+    def _post(self, endpoint: str, payload: dict, action: str, timeout: int = 45,
+              unknown_outcome_on_timeout: bool = False) -> dict:
+        """
+        POSTs to Sabre with a timeout and one token refresh on 401.
+        `unknown_outcome_on_timeout` marks calls (PNR create, ticketing, refund) where a read
+        timeout means the supplier may have completed the action — the caller must check
+        the PNR before retrying instead of resubmitting blindly.
+        """
+        url = f"{self.base_url}{endpoint}"
+        try:
+            response = self.session.post(url, headers=self.get_headers(), json=payload, timeout=timeout)
+            if response.status_code == 401:
+                with self._lock:
+                    self._refresh_token()
+                response = self.session.post(url, headers=self.get_headers(), json=payload, timeout=timeout)
+        except requests.exceptions.ReadTimeout as e:
+            if unknown_outcome_on_timeout:
+                raise SupplierError(
+                    f"{action}: Sabre did not respond in {timeout}s — the outcome is UNKNOWN. "
+                    f"Retrieve the PNR to check before retrying. ({e})"
+                )
+            raise SupplierError(f"{action} failed: Sabre timed out after {timeout}s")
+        except requests.exceptions.RequestException as e:
+            raise SupplierError(f"{action} failed. {e}")
+
+        if response.status_code >= 400:
+            write_log(f"Sabre {action} error: POST {url} | {response.status_code} | {response.text}",
+                      source="sabre_service", type="error")
+            raise SupplierError(f"{action} failed. HTTP {response.status_code} | Details: {response.text}")
+        try:
+            return response.json()
+        except ValueError:
+            raise SupplierError(f"{action} failed: Sabre returned a non-JSON response")
+
+    def _invalidate_token(self) -> None:
+        try:
+            from app.utils.redis_utils import redis_helper
+            redis_helper.delete_key(self.token_cache_key)
+        except Exception as exc:
+            print(f"[WARN] Failed to invalidate cached Sabre token: {exc}", flush=True)
+        self._access_token = None
+        self._token_expiry = 0.0
+
+    # ── Shopping ─────────────────────────────────────────────────────────────
+
     def search_flights(self, search_params: FlightSearchRequest) -> dict:
         """
         Calls Sabre's Bargain Finder Max (BFM) API to search for flights.
         """
-        url = f"{self.base_url}{SabreEndpoints.BARGAIN_FINDER_MAX}"
-        headers = self.get_headers()
-        
-        # BFM Request Payload Structure Construction
-        # This is a minimal basic structure for connecting.
-
-        # ── Build OriginDestinationInformation ─────────────────────────────
         origin_dest_info = []
         trip_type = (search_params.trip_type or "one_way").lower()
 
@@ -349,24 +544,19 @@ class SabreFlightService(SabreBaseService):
                 origin_dest_info.append({
                     "RPH": str(idx + 1),
                     "DepartureDateTime": seg.departure_date + "T00:00:00",
-                    "OriginLocation": {
-                        "LocationCode": seg.origin.upper()
-                    },
-                    "DestinationLocation": {
-                        "LocationCode": seg.destination.upper()
-                    }
+                    "OriginLocation": {"LocationCode": seg.origin.upper()},
+                    "DestinationLocation": {"LocationCode": seg.destination.upper()}
                 })
         else:
             origin_dest_info.append({
                 "RPH": "1",
                 "DepartureDateTime": search_params.departure_date + "T00:00:00",
-                "OriginLocation": {
-                    "LocationCode": search_params.origin
-                },
-                "DestinationLocation": {
-                    "LocationCode": search_params.destination
-                }
+                "OriginLocation": {"LocationCode": search_params.origin.upper()},
+                "DestinationLocation": {"LocationCode": search_params.destination.upper()}
             })
+
+        # Lap infants do not occupy a seat
+        seats_requested = search_params.adults + search_params.children
 
         payload = {
             "OTA_AirLowFareSearchRQ": {
@@ -378,23 +568,18 @@ class SabreFlightService(SabreBaseService):
                             "RequestorID": {
                                 "Type": "1",
                                 "ID": "1",
-                                "CompanyName": {
-                                    "Code": "TN"
-                                }
+                                "CompanyName": {"Code": "TN"}
                             }
                         }
                     ]
                 },
                 "OriginDestinationInformation": origin_dest_info,
                 "TravelerInfoSummary": {
-                    "SeatsRequested": [search_params.adults + search_params.children + search_params.infants],
+                    "SeatsRequested": [seats_requested],
                     "AirTravelerAvail": [
                         {
                             "PassengerTypeQuantity": [
-                                {
-                                    "Code": "ADT", 
-                                    "Quantity": search_params.adults
-                                }
+                                {"Code": "ADT", "Quantity": search_params.adults}
                             ]
                         }
                     ]
@@ -406,74 +591,44 @@ class SabreFlightService(SabreBaseService):
                 }
             }
         }
-        
-        # Reference shortcuts for cleaner code
-        tpa_extensions = payload["OTA_AirLowFareSearchRQ"]["TPA_Extensions"]
-        
+        rq = payload["OTA_AirLowFareSearchRQ"]
+        tpa_extensions = rq["TPA_Extensions"]
+
         # 1. Flexible Dates (+/- 1 to 3 days)
         if search_params.flexible_dates:
-             # Changes the request to ADRC (Alternate Date Request)
-             tpa_extensions["IntelliSellTransaction"]["RequestType"]["Name"] = "ADRC"
-             
+            tpa_extensions["IntelliSellTransaction"]["RequestType"]["Name"] = "ADRC"
+
         # 2. Direct Flights & Max Stops
         if search_params.direct_flights_only or search_params.max_stops is not None:
             stop_qty = 0 if search_params.direct_flights_only else search_params.max_stops
-
-            if "TravelPreferences" not in payload["OTA_AirLowFareSearchRQ"]:
-                payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"] = {}
-            payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["MaxStopsQuantity"] = stop_qty
+            rq.setdefault("TravelPreferences", {})["MaxStopsQuantity"] = stop_qty
 
         # 3. Included & Excluded Airlines
         if search_params.included_airlines or search_params.excluded_airlines:
-             if "TravelPreferences" not in payload["OTA_AirLowFareSearchRQ"]:
-                  payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"] = {}
-             
-             vendor_prefs = []
-             if search_params.included_airlines:
-                  for airline in search_params.included_airlines:
-                       vendor_prefs.append({"Code": airline, "Type": "Marketing"})
-             
-             if search_params.excluded_airlines:
-                  for airline in search_params.excluded_airlines:
-                       # Sabre uses an Exclude flag or PreferLevel="Unacceptable" depending on soap/rest schema. 
-                       # For BFM REST standard it's often an Exclude attribute.
-                       vendor_prefs.append({"Code": airline, "Type": "Marketing", "Exclude": True})
-                       
-             payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["VendorPref"] = vendor_prefs
+            vendor_prefs = []
+            for airline in search_params.included_airlines or []:
+                vendor_prefs.append({"Code": airline, "Type": "Marketing"})
+            for airline in search_params.excluded_airlines or []:
+                vendor_prefs.append({"Code": airline, "Type": "Marketing", "Exclude": True})
+            rq.setdefault("TravelPreferences", {})["VendorPref"] = vendor_prefs
 
         # 3.5 Cabin Class Preference
         if search_params.cabin_class:
-             cabin_req = search_params.cabin_class.upper()
-             
-             if "TravelPreferences" not in payload["OTA_AirLowFareSearchRQ"]:
-                  payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"] = {}
-             
-             if cabin_req == "ALL":
-                  # To get a mix of cabins, provide all as Preferred, though BFM still optimizes for lowest fare
-                  payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["CabinPref"] = [
-                       {"Cabin": "Y", "PreferLevel": "Preferred"},
-                       {"Cabin": "S", "PreferLevel": "Preferred"},
-                       {"Cabin": "C", "PreferLevel": "Preferred"},
-                       {"Cabin": "J", "PreferLevel": "Preferred"},
-                       {"Cabin": "F", "PreferLevel": "Preferred"},
-                       {"Cabin": "P", "PreferLevel": "Preferred"}
-                  ]
-             else:
-                  # For a specific cabin, enforce it strictly with "Only"
-                  payload["OTA_AirLowFareSearchRQ"]["TravelPreferences"]["CabinPref"] = [
-                       {
-                            "Cabin": cabin_req,
-                            "PreferLevel": "Only"
-                       }
-                  ]
+            cabin_req = search_params.cabin_class.upper()
+            prefs = rq.setdefault("TravelPreferences", {})
+            if cabin_req == "ALL":
+                prefs["CabinPref"] = [
+                    {"Cabin": c, "PreferLevel": "Preferred"} for c in ("Y", "S", "C", "J", "F", "P")
+                ]
+            else:
+                prefs["CabinPref"] = [{"Cabin": cabin_req, "PreferLevel": "Only"}]
+
         # Sabre BFM v5: PriceRequestInformation belongs under TravelerInfoSummary.
         # NegotiatedFareCode must match pattern [A-Za-z]{3}[0-9]{2} (e.g. "ABC12").
         _neg_fare_pattern = re.compile(r'^[A-Za-z]{3}[0-9]{2}$')
 
         if search_params.corporate_code or search_params.account_code or search_params.currency:
-            price_req = payload["OTA_AirLowFareSearchRQ"]["TravelerInfoSummary"].setdefault(
-                "PriceRequestInformation", {}
-            )
+            price_req = rq["TravelerInfoSummary"].setdefault("PriceRequestInformation", {})
 
             if search_params.currency:
                 price_req["CurrencyCode"] = search_params.currency
@@ -488,59 +643,29 @@ class SabreFlightService(SabreBaseService):
                           f"Sabre pattern [A-Za-z]{{3}}[0-9]{{2}} — skipped.")
 
             if search_params.account_code:
-                price_req.setdefault("AccountCode", []).append(
-                    {"Code": search_params.account_code}
-                )
-        
-        # Handle Return flight for round-trip (not applicable for multi-city)
-        if trip_type != "multi_city" and search_params.return_date:
-             rph = str(len(payload["OTA_AirLowFareSearchRQ"]["OriginDestinationInformation"]) + 1)
-             payload["OTA_AirLowFareSearchRQ"]["OriginDestinationInformation"].append({
-                 "RPH": rph,
-                 "DepartureDateTime": search_params.return_date + "T00:00:00",
-                 "OriginLocation": {
-                    "LocationCode": search_params.destination
-                 },
-                 "DestinationLocation": {
-                     "LocationCode": search_params.origin
-                 }
-             })
-             
-        # Children and Infants dynamic inclusion
-        if search_params.children > 0:
-            payload["OTA_AirLowFareSearchRQ"]["TravelerInfoSummary"]["AirTravelerAvail"][0]["PassengerTypeQuantity"].append({
-                 "Code": "CNN",
-                 "Quantity": search_params.children
-             })
-             
-        if search_params.infants > 0:
-             payload["OTA_AirLowFareSearchRQ"]["TravelerInfoSummary"]["AirTravelerAvail"][0]["PassengerTypeQuantity"].append({
-                 "Code": "INF",
-                 "Quantity": search_params.infants
-             })
-             
-        print(f"Sending request to Sabre: {url}")
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-             error_details = ""
-             if 'response' in locals() and hasattr(response, 'text'):
-                  error_details = f" | Details: {response.text}"
-                  print(f"Sabre Error Response: {response.text}")
-             raise Exception(f"Flight search failed. {str(e)}{error_details}")
+                price_req.setdefault("AccountCode", []).append({"Code": search_params.account_code})
 
+        # Return flight for round-trip (not applicable for multi-city)
+        if trip_type != "multi_city" and search_params.return_date:
+            rq["OriginDestinationInformation"].append({
+                "RPH": str(len(rq["OriginDestinationInformation"]) + 1),
+                "DepartureDateTime": search_params.return_date + "T00:00:00",
+                "OriginLocation": {"LocationCode": search_params.destination.upper()},
+                "DestinationLocation": {"LocationCode": search_params.origin.upper()}
+            })
+
+        ptq = rq["TravelerInfoSummary"]["AirTravelerAvail"][0]["PassengerTypeQuantity"]
+        if search_params.children > 0:
+            ptq.append({"Code": "CNN", "Quantity": search_params.children})
+        if search_params.infants > 0:
+            ptq.append({"Code": "INF", "Quantity": search_params.infants})
+
+        return self._post(SabreEndpoints.BARGAIN_FINDER_MAX, payload, "Flight search", timeout=60)
 
     def price_flight(self, pricing_params: FlightPricingRequest) -> dict:
         """
         Calls Sabre's Flight Check API to revalidate price and availability.
         """
-        url = f"{self.base_url}{SabreEndpoints.FLIGHT_CHECK}"
-        headers = self.get_headers()
-        
-        # Extract and format journeys/flights for Flight Check API v1 (Strict Schema)
         flights = []
         last_mktg = ""
         for segment in pricing_params.flight_segments:
@@ -559,176 +684,135 @@ class SabreFlightService(SabreBaseService):
                 "marketingFlightNumber": p["flight_number_int"],
                 "bookingClass": p["booking_class"]
             }
-
             if p.get("operating_airline"):
                 flight_obj["operatingAirlineCode"] = p["operating_airline"]
             flights.append(flight_obj)
 
-
-        # Travelers list (Strict Schema)
         travelers = []
         for p in pricing_params.passengers:
             for _ in range(p.quantity):
-                travelers.append({
-                    "passengerTypeCode": p.passenger_type
-                })
+                travelers.append({"passengerTypeCode": _sabre_ptc(p.passenger_type)})
 
-        payload = {
-            "journeys": [
-                {
-                    "flights": flights
-                }
-            ],
-            "travelers": travelers
-        }
-        
-        print(f"Sending Flight Check request to Sabre: {url}", flush=True)
-        print(f"Sabre Flight Check Request Payload: {json.dumps(payload, indent=2)}", flush=True)
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}", flush=True)
-            raise Exception(f"Flight pricing revalidation failed. {str(e)}{error_details}")
-        
+        payload = {"journeys": [{"flights": flights}], "travelers": travelers}
+        return self._post(SabreEndpoints.FLIGHT_CHECK, payload, "Flight pricing revalidation")
+
+    # ── Booking ──────────────────────────────────────────────────────────────
+
     def create_pnr(self, booking_params: FlightBookingRequest) -> dict:
         """
         Calls Sabre's Create Passenger Name Record API to lock in the booking reservation.
+
+        Infants (INF) are added as lap infants: flagged on the name, excluded from
+        NumberInParty, and linked to an adult with an INFT SSR.
         """
-        url = f"{self.base_url}{SabreEndpoints.CREATE_PNR}?mode=create"
-        headers = self.get_headers()
-        
         person_names = []
         contact_numbers = []
-        
         advance_passengers = []
+        secure_flight = []
+        services = []
+
+        adult_name_numbers = [
+            f"{i+1}.1" for i, p in enumerate(booking_params.passengers) if _sabre_ptc(p.passenger_type) == "ADT"
+        ]
+        infant_idx = 0
         for i, passenger in enumerate(booking_params.passengers):
             name_number = f"{i+1}.1"
-            person_names.append({
-                "NameNumber": name_number,
-                "GivenName": passenger.first_name.upper(),
-                "Surname": passenger.last_name.upper()
-            })
-            
+            ptc = _sabre_ptc(passenger.passenger_type)
+            is_infant = ptc == "INF"
+            first = passenger.first_name.upper()
+            last = passenger.last_name.upper()
+
+            name = {"NameNumber": name_number, "GivenName": first, "Surname": last, "PassengerType": ptc}
+            if is_infant:
+                name["Infant"] = True
+            person_names.append(name)
+
             if passenger.phone:
-                contact_numbers.append({
-                    "Phone": passenger.phone,
-                    "PhoneUseType": "A"
-                })
-                
-            # APIS / Advance Passenger Info for ticketing
-            if passenger.date_of_birth and passenger.gender:
-                adv_pax = {
-                    "PersonName": {
-                        "NameNumber": name_number,
-                        "GivenName": passenger.first_name.upper(),
-                        "Surname": passenger.last_name.upper(),
-                        "DateOfBirth": passenger.date_of_birth,
-                        "Gender": "M" if passenger.gender.upper().startswith("M") else "F"
-                    }
-                }
-                if passenger.document_number:
-                    adv_pax["Document"] = {
+                contact_numbers.append({"Phone": passenger.phone, "PhoneUseType": "A"})
+
+            gender = "M" if passenger.gender.upper().startswith("M") else "F"
+            if is_infant:
+                gender += "I"   # MI / FI — infant gender codes for DOCS / Secure Flight
+
+            sf_name = {
+                "NameNumber": name_number,
+                "GivenName": first,
+                "Surname": last,
+                "DateOfBirth": passenger.date_of_birth,
+                "Gender": gender,
+            }
+            secure_flight.append({"PersonName": sf_name})
+
+            # DOCS only when a real travel document was provided — never send placeholder passports
+            if passenger.document_number:
+                advance_passengers.append({
+                    "PersonName": sf_name,
+                    "Document": {
                         "Number": passenger.document_number.upper(),
                         "IssueCountry": (passenger.document_issue_country or passenger.nationality or "BD").upper()[:2],
                         "NationalityCountry": (passenger.nationality or passenger.document_issue_country or "BD").upper()[:2],
-                        "ExpirationDate": passenger.document_expiry or "2099-12-31",
-                        "Type": "P" # P = Passport
+                        "ExpirationDate": passenger.document_expiry,
+                        "Type": "P"  # P = Passport
                     }
-                else:
-                    # If document is not provided, we can still try to pass DOCS with a dummy or just DOB/Gender.
-                    # Some airlines accept it as SecureFlight (DOCO/DOCA), but for DOCS a document is usually required.
-                    adv_pax["Document"] = {
-                        "Number": "00000000",
-                        "IssueCountry": (passenger.nationality or "BD").upper()[:2],
-                        "NationalityCountry": (passenger.nationality or "BD").upper()[:2],
-                        "ExpirationDate": "2099-12-31",
-                        "Type": "P"
-                    }
-                advance_passengers.append(adv_pax)
-                
+                })
+
+            if is_infant:
+                # Link the infant to an adult (1st infant → 1st adult, ...). Schema guarantees infants <= adults.
+                parent = adult_name_numbers[infant_idx] if infant_idx < len(adult_name_numbers) else "1.1"
+                dob = datetime.date.fromisoformat(passenger.date_of_birth).strftime("%d%b%y").upper()
+                services.append({
+                    "SSR_Code": "INFT",
+                    "PersonName": {"NameNumber": parent},
+                    "Text": f"{last}/{first}/{dob}",
+                    "SegmentNumber": "A",
+                })
+                infant_idx += 1
+
+        seated = sum(1 for p in booking_params.passengers if _sabre_ptc(p.passenger_type) != "INF")
+
         flight_segments = []
         for segment in booking_params.flight_segments:
             p = _parse_sabre_segment(segment)
-            num_passengers = str(len(booking_params.passengers))
-
+            flight_no = str(p["flight_number_int"] or p["flight_number_str"])
             flight_segments.append({
                 "DepartureDateTime": p["departure_datetime"],
-                "FlightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
-                "NumberInParty": num_passengers,
+                "FlightNumber": flight_no,
+                "NumberInParty": str(seated),
                 "ResBookDesigCode": p["booking_class"],
                 "Status": "NN",
-                "DestinationLocation": {
-                    "LocationCode": p["destination"]
-                },
-                "MarketingAirline": {
-                    "Code": p["marketing_airline"],
-                    "FlightNumber": str(p["flight_number_int"] or p["flight_number_str"])
-                },
-                "OriginLocation": {
-                    "LocationCode": p["origin"]
-                }
+                "DestinationLocation": {"LocationCode": p["destination"]},
+                "MarketingAirline": {"Code": p["marketing_airline"], "FlightNumber": flight_no},
+                "OriginLocation": {"LocationCode": p["origin"]}
             })
 
-        customer_info = {
-            "PersonName": person_names
-        }
+        customer_info = {"PersonName": person_names}
         if contact_numbers:
-            customer_info["ContactNumbers"] = {
-                "ContactNumber": contact_numbers
-            }
+            customer_info["ContactNumbers"] = {"ContactNumber": contact_numbers}
 
-        # Map passenger types for pricing
-        pax_types_count = {}
+        pax_types_count: Dict[str, int] = {}
         for p in booking_params.passengers:
-            ptc = p.passenger_type or "ADT"
+            ptc = _sabre_ptc(p.passenger_type)
             pax_types_count[ptc] = pax_types_count.get(ptc, 0) + 1
 
-        pricing_pax_types = []
-        for ptc, count in pax_types_count.items():
-            pricing_pax_types.append({
-                "Code": ptc,
-                "Quantity": str(count)
-            })
-
-        pricing_qualifiers = {
-            "PassengerType": pricing_pax_types
-        }
-
-        # Build AirPrice OptionalQualifiers — include FlightQualifiers.ValidatingCarrier when
-        # a specific carrier is provided so Sabre's stored Price Quote is bound to a carrier
-        # that this PCC has Electronic Ticketing Authority (ETA) for.
-        # NOTE: ValidatingCarrier belongs under FlightQualifiers (not PricingQualifiers) in v2.4.0.
         optional_qualifiers: dict = {
-            "PricingQualifiers": pricing_qualifiers
-        }
-        if getattr(booking_params, "validating_carrier", None):
-            optional_qualifiers["FlightQualifiers"] = {
-                "ValidatingCarrier": {
-                    "Code": booking_params.validating_carrier.strip().upper()
-                }
+            "PricingQualifiers": {
+                "PassengerType": [{"Code": c, "Quantity": str(n)} for c, n in pax_types_count.items()]
             }
+        }
+        optional_qualifiers.update(_validating_carrier_qualifier(booking_params.validating_carrier))
 
         payload = {
             "CreatePassengerNameRecordRQ": {
                 "version": "2.4.0",
+                # Without this Sabre commits the PNR even when AirPrice fails, leaving an unpriced
+                # booking with no PQ that can never be ticketed.
+                "haltOnAirPriceError": True,
                 "TravelItineraryAddInfo": {
-                    "AgencyInfo": {
-                        "Ticketing": {
-                            "TicketType": "7TAW"
-                        }
-                    },
+                    "AgencyInfo": {"Ticketing": {"TicketType": "7TAW"}},
                     "CustomerInfo": customer_info
                 },
                 "AirBook": {
-                    "OriginDestinationInformation": {
-                        "FlightSegment": flight_segments
-                    }
+                    "OriginDestinationInformation": {"FlightSegment": flight_segments}
                 },
                 "AirPrice": [
                     {
@@ -738,481 +822,454 @@ class SabreFlightService(SabreBaseService):
                         }
                     }
                 ],
-                "PostProcessing": {
-                    "EndTransaction": {
-                        "Source": {
-                            "ReceivedFrom": "API"
-                        }
-                    }
-                }
-            }
-        }
-        
-        if advance_passengers:
-            secure_flight = []
-            for adv_pax in advance_passengers:
-                if "PersonName" in adv_pax:
-                    secure_flight.append({
-                        "PersonName": adv_pax["PersonName"]
-                    })
-            payload["CreatePassengerNameRecordRQ"]["SpecialReqDetails"] = {
-                "SpecialService": {
-                    "SpecialServiceInfo": {
-                        "AdvancePassenger": advance_passengers,
-                        "SecureFlight": secure_flight
-                    }
-                }
-            }
-        
-        print(f"Sending PNR creation request to Sabre: {url}", flush=True)
-        print(f"Sabre PNR Creation Request Payload: {json.dumps(payload, indent=2)}", flush=True)
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            res_data = response.json()
-            
-            # If PNR creation was not successful, delete cached token to start the next attempt with a fresh session
-            rs = res_data.get("CreatePassengerNameRecordRS", {})
-            app_results = rs.get("ApplicationResults", {})
-            status = app_results.get("status")
-            if status != "Complete":
-                try:
-                    from app.utils.redis_utils import redis_helper
-                    redis_helper.delete_key("sabre_access_token")
-                    print("[INFO] Invalidated cached Sabre token due to incomplete PNR creation.", flush=True)
-                except Exception as re:
-                    print(f"[WARN] Failed to invalidate cached Sabre token: {re}", flush=True)
-            return res_data
-        except requests.exceptions.RequestException as e:
-
-            try:
-                from app.utils.redis_utils import redis_helper
-                redis_helper.delete_key("sabre_access_token")
-                print("[INFO] Invalidated cached Sabre token due to PNR creation request failure.", flush=True)
-            except Exception as re:
-                print(f"[WARN] Failed to invalidate cached Sabre token on request exception: {re}", flush=True)
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}", flush=True)
-            raise Exception(f"PNR creation failed. {str(e)}{error_details}")
-
-    def reprice_pnr(self, pnr: str, passenger_types: list = None, validating_carrier: str = None) -> dict:
-        """
-        Reprices / re-generates the price quote on an existing PNR.
-        Used when the original price quote has expired.
-
-        Returns both the raw Sabre response and a parsed `pricing` dict with:
-          - total_fare, base_fare, tax_amount, currency, quote_number
-
-        :param pnr:                6-character Sabre Record Locator
-        :param passenger_types:    list of dicts like [{"Code": "ADT", "Quantity": "1"}]
-                                   If None, defaults to 1 adult.
-        :param validating_carrier: Optional airline code to force validating carrier on the quote
-        :return: dict with keys: raw_response, pricing, success, message
-        """
-        url = f"{self.base_url}{SabreEndpoints.CREATE_PNR}?mode=reprice"
-        headers = self.get_headers()
-
-        if not passenger_types:
-            passenger_types = [{"Code": "ADT", "Quantity": "1"}]
-
-        reprice_pricing_qualifiers = {
-            "PassengerType": passenger_types
-        }
-        if validating_carrier:
-            reprice_pricing_qualifiers["ValidatingCarrier"] = {
-                "Code": validating_carrier.upper()
-            }
-
-        payload = {
-            "CreatePassengerNameRecordRQ": {
-                "version": "2.4.0",
-                "TravelItineraryAddInfo": {
-                    "AgencyInfo": {
-                        "Ticketing": {
-                            "TicketType": "7TAW"
+                "SpecialReqDetails": {
+                    "SpecialService": {
+                        "SpecialServiceInfo": {
+                            "SecureFlight": secure_flight,
+                            **({"AdvancePassenger": advance_passengers} if advance_passengers else {}),
+                            **({"Service": services} if services else {}),
                         }
                     }
                 },
+                "PostProcessing": {
+                    "EndTransaction": {"Source": {"ReceivedFrom": "API"}}
+                }
+            }
+        }
+
+        print(f"[CreatePNR] Sending PNR creation request to Sabre ({len(flight_segments)} segs, "
+              f"{len(person_names)} pax)", flush=True)
+
+        try:
+            res_data = self._post(SabreEndpoints.CREATE_PNR + "?mode=create", payload, "PNR creation",
+                                  timeout=90, unknown_outcome_on_timeout=True)
+        except SupplierError:
+            # Start the next attempt with a fresh Sabre session
+            self._invalidate_token()
+            raise
+
+        status = res_data.get("CreatePassengerNameRecordRS", {}).get("ApplicationResults", {}).get("status")
+        if status != "Complete":
+            self._invalidate_token()
+        return res_data
+
+    def extract_booked_price(self, response: dict) -> dict:
+        """Fare Sabre stored in the PNR at booking (AirPrice Retain=true)."""
+        return extract_sabre_price_quote(response)
+
+    def _stored_fare(self, pnr: str) -> dict:
+        """Active stored price quote(s) on the PNR, read with getBooking (read-only)."""
+        booking = self._post(SabreEndpoints.GET_PNR_DETAILS, {"confirmationId": pnr}, "PNR retrieval")
+        return extract_booking_fares(booking)
+
+    def reprice_pnr(self, pnr: str, passenger_types: list = None, validating_carrier: str = None) -> dict:
+        """
+        Re-prices the itinerary on an existing PNR (Update Passenger Name Record, AirPrice Retain=true)
+        and returns the resulting stored fare. Use when the stored price quote has expired.
+
+        Returns: success, message, pricing {total_fare, base_fare, tax_amount, currency, quote_numbers},
+        raw_response.
+        """
+        if not passenger_types:
+            passenger_types = [{"Code": "ADT", "Quantity": "1"}]
+        passenger_types = [
+            {"Code": _sabre_ptc(pt.get("Code") or pt.get("code")), "Quantity": str(pt.get("Quantity") or pt.get("quantity") or 1)}
+            for pt in passenger_types
+        ]
+
+        optional_qualifiers: dict = {"PricingQualifiers": {"PassengerType": passenger_types}}
+        optional_qualifiers.update(_validating_carrier_qualifier(validating_carrier))
+
+        payload = {
+            "UpdatePassengerNameRecordRQ": {
+                "version": "1.1.0",
+                "Itinerary": {"id": pnr},
                 "AirPrice": [
                     {
                         "PriceRequestInformation": {
                             "Retain": True,
-                            "OptionalQualifiers": {
-                                "PricingQualifiers": reprice_pricing_qualifiers
-                            }
+                            "OptionalQualifiers": optional_qualifiers
                         }
                     }
                 ],
-                "Itinerary": {
-                    "ID": pnr
-                },
                 "PostProcessing": {
-                    "EndTransaction": {
-                        "Source": {
-                            "ReceivedFrom": f"{self.pcc} REPRICE"
-                        }
-                    }
+                    "EndTransaction": {"Source": {"ReceivedFrom": f"{self.pcc} REPRICE"}}
                 }
             }
         }
 
-        print(f"[Reprice] Repricing PNR {pnr} at {url}", flush=True)
+        print(f"[Reprice] Repricing PNR {pnr}", flush=True)
+        res_data = self._post(SabreEndpoints.UPDATE_PNR, payload, "PNR reprice", timeout=60)
 
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            res_data = response.json()
-            print(f"[Reprice] Raw response keys: {list(res_data.keys())}", flush=True)
+        app_status = res_data.get("UpdatePassengerNameRecordRS", {}).get("ApplicationResults", {}).get("status")
+        if app_status != "Complete":
+            raise SupplierError(f"PNR reprice failed for {pnr} | Details: {json.dumps(res_data)}")
 
-            # ── Parse pricing from AirPrice section of the response ──────────
-            pricing = self._extract_reprice_pricing(res_data)
-
-            return {
-                "success": True,
-                "message": "PNR repriced successfully",
-                "pricing": pricing,
-                "raw_response": res_data,
-            }
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"[Reprice] Sabre Error Response: {response.text}", flush=True)
-            raise Exception(f"PNR reprice failed. {str(e)}{error_details}")
-
-    def _extract_reprice_pricing(self, res_data: dict) -> dict:
-        """
-        Parses the AirPrice section of a CreatePassengerNameRecordRS response
-        to extract fare totals for display to the user before confirming issuance.
-        """
-        pricing = {
-            "total_fare": 0,
-            "base_fare": 0,
-            "tax_amount": 0,
-            "currency": "BDT",
-            "quote_number": 1,
+        pricing = self._stored_fare(pnr)
+        if not pricing["total_fare"]:
+            pricing = extract_sabre_price_quote(res_data)
+        return {
+            "success": True,
+            "message": "PNR repriced successfully",
+            "pricing": {**pricing, "quote_number": (pricing["quote_numbers"] or [None])[-1]},
+            "raw_response": res_data,
         }
 
-        try:
-            rs = res_data.get("CreatePassengerNameRecordRS", {})
+    # ── Ticketing ────────────────────────────────────────────────────────────
 
-            # Extract quote number from AirPrice/PriceQuote section
-            air_price_list = rs.get("AirPrice", [])
-            if not isinstance(air_price_list, list):
-                air_price_list = [air_price_list]
-
-            for air_price in air_price_list:
-                # Quote number
-                pq_list = air_price.get("PriceQuote", [])
-                if isinstance(pq_list, list) and pq_list:
-                    pricing["quote_number"] = pq_list[0].get("RPH", 1)
-                elif isinstance(pq_list, dict):
-                    pricing["quote_number"] = pq_list.get("RPH", 1)
-
-                # Fare amounts — try PricedItinerary > AirItineraryPricingInfo
-                priced = air_price.get("PricedItinerary", [])
-                if not isinstance(priced, list):
-                    priced = [priced]
-
-                for pit in priced:
-                    pricing_info = pit.get("AirItineraryPricingInfo", {})
-                    if not pricing_info:
-                        continue
-
-                    itin_total = pricing_info.get("ItinTotalFare", {})
-
-                    # Total fare
-                    total_fare_node = itin_total.get("TotalFare", {})
-                    if total_fare_node:
-                        pricing["total_fare"] = float(total_fare_node.get("Amount", 0) or 0)
-                        pricing["currency"]   = total_fare_node.get("CurrencyCode", "BDT")
-
-                    # Base fare
-                    base_fare_node = itin_total.get("BaseFare", {})
-                    if base_fare_node:
-                        pricing["base_fare"] = float(base_fare_node.get("Amount", 0) or 0)
-
-                    # Taxes
-                    taxes_node = itin_total.get("Taxes", {})
-                    if taxes_node:
-                        pricing["tax_amount"] = float(taxes_node.get("TotalAmount", 0) or 0)
-
-                    if pricing["total_fare"] > 0:
-                        break
-
-            # Fallback: derive tax from total - base
-            if pricing["total_fare"] > 0 and pricing["tax_amount"] == 0 and pricing["base_fare"] > 0:
-                pricing["tax_amount"] = round(pricing["total_fare"] - pricing["base_fare"], 2)
-
-        except Exception as ex:
-            print(f"[Reprice] Failed to parse pricing from response: {ex}", flush=True)
-
-        return pricing
-
-    def issue_ticket(self, ticketing_params: TicketingRequest) -> dict:
+    def quote_issue(self, pnr: str, passenger_types: list = None, validating_carrier: str = None) -> dict:
         """
-        Issues an e-ticket for the given PNR.
+        Re-reads the stored price quote(s) on the PNR before ticketing — this is the fare the airline
+        honours at issuance while the PQ is valid. Returns the uniform quote dict used by the price guard.
+        """
+        pricing = self._stored_fare(pnr)
+        if not pricing["total_fare"] or not pricing["quote_numbers"]:
+            raise SupplierError(
+                f"PNR {pnr} has no active stored price quote (PQ) — it is missing or expired. "
+                f"Reprice the PNR (/pnr/reprice) and confirm the new fare before issuing."
+            )
+        return {
+            "amount": pricing["total_fare"], "base": pricing["base_fare"], "tax": pricing["tax_amount"],
+            "currency": pricing["currency"], "context": {"quote_numbers": pricing["quote_numbers"]},
+        }
+
+    def issue_ticket(self, ticketing_params: TicketingRequest, quote: dict) -> dict:
+        """
+        Issues e-tickets for the given PNR against the price quote record(s) from quote_issue().
+
+        quote_issue() re-reads the active stored PQ(s) and the price guard confirms that amount first;
+        exactly those PQ records are ticketed. Commission comes from the supplier configuration
+        (settings.commission_percent), never from the API caller.
 
         DesignatePrinter notes (Sabre REST AirTicketRQ v1.3.0):
-          - Ticket.CountryCode : BSP/ARC country for settlement — do NOT add LNIATA here;
-                                  it is invalid on the Ticket node and causes TKT PRT NOT ASSIGNED.
-          - Hardcopy.LNIATA    : physical hardcopy printer address (optional, omitted when blank).
-          - InvoiceItinerary.LNIATA: invoice printer address (optional, omitted when blank).
-
-        ValidatingCarrier override:
-          Pass `validating_carrier` in the request body to override the carrier on the stored
-          Price Quote (PQ). Required when the PCC has ETA for a specific carrier but Sabre
-          auto-assigned a different one during pricing (AUTH CARRIER INVLD-0633).
+          - Ticket.CountryCode : BSP/ARC country for settlement — LNIATA is invalid on this node.
+          - Hardcopy / InvoiceItinerary LNIATA: optional, only sent when configured.
         """
-        url = f"{self.base_url}{SabreEndpoints.ISSUE_TICKET}"
-        headers = self.get_headers()
+        quote_numbers = ((quote or {}).get("context") or {}).get("quote_numbers") or [1]
+        payload = self._air_ticket_payload(
+            ticketing_params.pnr, [{"Number": int(n)} for n in quote_numbers],
+            fop_type=ticketing_params.fop_type, country=ticketing_params.country_code,
+            printer=ticketing_params.printer_id,
+        )
+        print(f"[Issue] Ticketing PNR {ticketing_params.pnr} with PQ records {quote_numbers}", flush=True)
+        return self._post(SabreEndpoints.ISSUE_TICKET, payload, "Ticketing",
+                          timeout=120, unknown_outcome_on_timeout=True)
 
-        lniata  = ticketing_params.printer_id or self.lniata
-        country = ticketing_params.country_code or self.config.country_code or "BD"
-
-        # ── Ticket printer: CountryCode only (no LNIATA — causes TKT PRT NOT ASSIGNED) ──
-        printers: dict = {
-            "Ticket": {
-                "CountryCode": country
-            }
-        }
-        # Only add physical printer nodes when an LNIATA is configured
+    def _air_ticket_payload(self, pnr: str, records: list, fop_type: Optional[str] = None,
+                            country: Optional[str] = None, printer: Optional[str] = None) -> dict:
+        """AirTicketRQ v1.3.0 for the given PQ records (or PQR records with Reissue=true)."""
+        lniata = printer or self.lniata
+        printers: dict = {"Ticket": {"CountryCode": country or self.config.country_code or "BD"}}
         if lniata:
-            printers["Hardcopy"]         = {"LNIATA": lniata}
+            printers["Hardcopy"] = {"LNIATA": lniata}
             printers["InvoiceItinerary"] = {"LNIATA": lniata}
 
-        # ── PricingQualifiers: quote record + optional validating carrier override ──────
-        pricing_qualifiers: dict = {
-            "PriceQuote": [
-                {
-                    "Record": [
-                        {
-                            "Number":  ticketing_params.quote_number or 1,
-                            "Reissue": ticketing_params.reissue or False
-                        }
-                    ]
-                }
-            ]
+        ticketing: dict = {
+            "FOP_Qualifiers": {"BasicFOP": {"Type": fop_type or "CA"}},
+            "PricingQualifiers": {"PriceQuote": [{"Record": records}]},
         }
-        # Note: In Sabre AirTicketRQ v1.3.0, ValidatingCarrier is NOT an allowed property under PricingQualifiers
-        # (it must be specified during booking/pricing via FlightQualifiers in CreatePassengerNameRecordRQ).
-        if ticketing_params.validating_carrier:
-            vc_code = ticketing_params.validating_carrier.strip().upper()
-            print(f"[Issue] Validating carrier specified: {vc_code} (handled via stored PriceQuote)", flush=True)
+        commission = (self.config.settings or {}).get("commission_percent", 7)
+        if commission is not None:
+            ticketing["MiscQualifiers"] = {"Commission": {"Percent": float(commission)}}
 
-
-        payload = {
+        return {
             "AirTicketRQ": {
                 "version": "1.3.0",
-                "DesignatePrinter": {
-                    "Printers": printers
-                },
-                "Itinerary": {
-                    "ID": ticketing_params.pnr
-                },
-                "Ticketing": [
-                    {
-                        "FOP_Qualifiers": {
-                            "BasicFOP": {
-                                "Type": ticketing_params.fop_type or "CA"
-                            }
-                        },
-                        "MiscQualifiers": {
-                            "Commission": {
-                                "Percent": ticketing_params.commission_percent if ticketing_params.commission_percent is not None else 7
-                            }
-                        },
-                        "PricingQualifiers": pricing_qualifiers
-                    }
-                ],
+                "DesignatePrinter": {"Printers": printers},
+                "Itinerary": {"ID": pnr},
+                "Ticketing": [ticketing],
                 "PostProcessing": {
-                    "EndTransaction": {
-                        "Source": {
-                            "ReceivedFrom": f"{self.pcc} WEB"
-                        }
-                    }
+                    "EndTransaction": {"Source": {"ReceivedFrom": f"{self.pcc} WEB"}}
                 }
             }
         }
 
-        print(f"[Issue] Sending Ticketing request to Sabre: {url} | PNR: {ticketing_params.pnr}", flush=True)
-        print(f"[Issue] AirTicketRQ payload: {json.dumps(payload, indent=2)}", flush=True)
-
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"[Issue] Sabre Error Response: {response.text}", flush=True)
-            raise Exception(f"Ticketing failed. {str(e)}{error_details}")
-
     def get_pnr_details(self, details_params: PNRDetailsRequest) -> dict:
-        """
-        Calls Sabre's Get Passenger Name Record API to retrieve full details of a booking.
-        """
-        url = f"{self.base_url}{SabreEndpoints.GET_PNR_DETAILS}"
-        headers = self.get_headers()
-        
-        payload = {
-            "confirmationId": details_params.pnr
-        }
-        
-        print(f"Calling get_pnr_details for {details_params.pnr} at {url}")
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}")
-            raise Exception(f"PNR retrieval failed. {str(e)}{error_details}")
+        return self._post(SabreEndpoints.GET_PNR_DETAILS, {"confirmationId": details_params.pnr}, "PNR retrieval")
 
     def cancel_itinerary(self, cancel_params: CancelItineraryRequest) -> dict:
-        """
-        Calls Sabre's Cancel AtBooking API to cancel an existing PNR/itinerary.
-        """
-        url = f"{self.base_url}{SabreEndpoints.CANCEL_ITINERARY}"
-        headers = self.get_headers()
-
         payload = {
             "confirmationId": cancel_params.pnr,
             "cancelAll": cancel_params.cancel_segments if cancel_params.cancel_segments is not None else True
         }
-
-        print(f"Sending Cancel Itinerary request to Sabre: {url} | PNR: {cancel_params.pnr}")
-
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}")
-            raise Exception(f"Itinerary cancellation failed. {str(e)}{error_details}")
+        return self._post(SabreEndpoints.CANCEL_ITINERARY, payload, "Itinerary cancellation",
+                          unknown_outcome_on_timeout=True)
 
     def void_ticket(self, void_params: VoidTicketRequest) -> dict:
-        """
-        Calls Sabre's voidFlightTickets API to cancel an issued ticket (usually within 24 hours).
-        """
-        url = f"{self.base_url}{SabreEndpoints.VOID_TICKET}"
-        headers = self.get_headers()
-        
-        payload = {
-            "tickets": [void_params.ticket_number]
-        }
-        if void_params.pnr:
-            payload["confirmationId"] = void_params.pnr
-        
-        print(f"Sending Void AtFlightTicket request to Sabre: {url} | AtFlightTicket: {void_params.ticket_number} | PNR: {void_params.pnr}")
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}")
-            raise Exception(f"AtFlightTicket voiding failed. {str(e)}{error_details}")
+        payload = {"tickets": [void_params.ticket_number], "confirmationId": void_params.pnr}
+        return self._post(SabreEndpoints.VOID_TICKET, payload, "Ticket voiding",
+                          unknown_outcome_on_timeout=True)
 
-    def exchange_ticket(self, exchange_params: ExchangeTicketRequest) -> dict:
-        """
-        Calls Sabre's AirTicket API (/v1.3.0/air/ticket) with Reissue=True to process an automated ticket exchange.
-        """
-        url = f"{self.base_url}{SabreEndpoints.EXCHANGE_TICKET}"
-        headers = self.get_headers()
-        
-        country = getattr(exchange_params, 'country_code', None) or self.config.country_code or "BD"
-        lniata = self.lniata
+    # ── Exchange / Refund ────────────────────────────────────────────────────
 
-        payload = {
-            "AirTicketRQ": {
-                "version": "1.3.0",
-                "targetCity": self.pcc,
-                "DesignatePrinter": {
-                    "Printers": {
-                        "Ticket": {
-                            "CountryCode": country
-                        },
-                        "Hardcopy": {
-                            "LNIATA": lniata
-                        },
-                        "InvoiceItinerary": {
-                            "LNIATA": lniata
-                        }
-                    }
-                },
-                "Itinerary": {
-                    "ID": exchange_params.pnr
-                },
-                "Ticketing": [
-                    {
-                        "FOP_Qualifiers": {
-                            "BasicFOP": {
-                                "Type": "CA"
-                            }
-                        },
-                        "MiscQualifiers": {
-                            "Commission": {
-                                "Percent": 7
-                            }
-                        },
-                        "PricingQualifiers": {
-                            "PriceQuote": [
-                                {
-                                    "Record": [
-                                        {
-                                            "Number": 1,
-                                            "Reissue": True
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    }
-                ],
-                "PostProcessing": {
-                    "EndTransaction": {
-                        "Source": {
-                            "ReceivedFrom": f"{self.pcc} WEB"
-                        }
-                    }
-                }
-            }
+    # Sabre automated exchange (Exchange Booking REST v1.1.0):
+    #   quote   → ExchangeBooking with a price comparison that always halts (amountSpecified=-1, zero
+    #             tolerance): Sabre prices the exchange but commits nothing.
+    #   confirm → ExchangeBooking with amountSpecified=<confirmed amount> and halt on any increase
+    #             beyond tolerance: Sabre rebooks, stores the PQR and commits only within the price;
+    #             then AirTicketRQ with PriceQuote Record=<PQR>, Reissue=true issues the new ticket.
+
+    def _exchange_context(self, pnr: str, ticket_number: str) -> dict:
+        """Segments covered by the ticket (by PNR segment number) and the ticket holder's name number."""
+        booking = self._post(SabreEndpoints.GET_PNR_DETAILS, {"confirmationId": pnr}, "PNR retrieval")
+        ticket = next((t for t in _as_list(booking.get("flightTickets")) if t.get("number") == ticket_number), None)
+        if not ticket:
+            raise ValueError(f"Ticket {ticket_number} is not on PNR {pnr}")
+        if str(ticket.get("ticketStatusCode") or "").upper() not in ("TE", "TKT", "E") and \
+                str(ticket.get("ticketStatusName") or "").lower() != "issued":
+            raise ValueError(f"Ticket {ticket_number} is {ticket.get('ticketStatusName')} — only an issued ticket can be exchanged")
+
+        flights = [f for f in _as_list(booking.get("flights")) if isinstance(f, dict)]
+        flights.sort(key=lambda f: (str(f.get("departureDate")), str(f.get("departureTime"))))
+        open_items = {
+            str(c.get("itemId")) for c in _as_list(ticket.get("flightCoupons"))
+            if str(c.get("couponStatusCode") or "I").upper() in ("I", "O", "A")
         }
-        
-        print(f"[Exchange] Sending AtFlightTicket Exchange request to Sabre: {url} | PNR: {exchange_params.pnr} | Original AtFlightTicket: {exchange_params.original_ticket_number}", flush=True)
-        
+        segments = [i + 1 for i, f in enumerate(flights) if str(f.get("itemId")) in open_items]
+        if not segments:
+            raise ValueError(f"Ticket {ticket_number} has no open coupons left to exchange")
+
+        traveler_index = ticket.get("travelerIndex")
+        travelers = [t for t in _as_list(booking.get("travelers")) if isinstance(t, dict)]
+        holder = next((t for t in travelers if t.get("travelerIndex") == traveler_index), None) or \
+            (travelers[0] if len(travelers) == 1 else None)
+        name_number = f"{(holder or {}).get('nameAssociationId') or traveler_index or 1}.1"
+        seated = sum(1 for t in travelers if str(t.get("passengerCode") or t.get("type") or "ADT").upper() != "INF") or 1
+        return {"segments": segments, "name_number": name_number, "seated": seated}
+
+    def _exchange_booking(self, pnr: str, ticket_number: str, new_segments: list, ctx: dict,
+                          amount_specified: float, increase_tolerance: float, halt_on_decrease: bool) -> dict:
+        flight_segments = []
+        for seg in new_segments:
+            p = _parse_sabre_segment(seg)
+            flight_no = str(p["flight_number_int"] or p["flight_number_str"])
+            flight_segments.append({
+                "DepartureDateTime": p["departure_datetime"],
+                "ArrivalDateTime": p["arrival_datetime"],
+                "FlightNumber": flight_no,
+                "NumberInParty": str(ctx["seated"]),
+                "ResBookDesigCode": p["booking_class"],
+                "Status": "NN",
+                "OriginLocation": {"LocationCode": p["origin"]},
+                "DestinationLocation": {"LocationCode": p["destination"]},
+                "MarketingAirline": {"Code": p["marketing_airline"], "FlightNumber": flight_no},
+            })
+
+        payload = {"ExchangeBookingRQ": {
+            "version": "1.1.0",
+            "Itinerary": {"id": pnr},
+            "Cancel": {"Segment": [{"Number": n} for n in ctx["segments"]]},
+            "AirBook": {
+                # Halt (change nothing) unless every new segment is confirmed by the airline
+                "HaltOnStatus": [{"Code": c} for c in ("HL", "KK", "LL", "NN", "NO", "UC", "US")],
+                "OriginDestinationInformation": {"FlightSegment": flight_segments},
+            },
+            "AutomatedExchanges": [{
+                "ExchangeComparison": {
+                    "OriginalTicketNumber": ticket_number,
+                    "PriceRequestInformation": {"OptionalQualifiers": {"PricingQualifiers": {
+                        "NameSelect": {"NameNumber": ctx["name_number"]}}}},
+                },
+                "PriceComparison": {
+                    "amountSpecified": amount_specified,
+                    "AcceptablePriceIncrease": {"haltOnNonAcceptablePrice": True, "Amount": increase_tolerance},
+                    "AcceptablePriceDecrease": {"haltOnNonAcceptablePrice": halt_on_decrease, "Amount": 0},
+                },
+            }],
+            "PostProcessing": {
+                "returnPQRInfo": True,
+                "redisplayReservation": False,
+                "EndTransaction": {"Source": {"ReceivedFrom": f"{self.pcc} EXCHANGE"}},
+            },
+        }}
         try:
-            response = self.session.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"[Exchange] Sabre Error Response: {response.text}", flush=True)
-            raise Exception(f"AtFlightTicket exchange failed. {str(e)}{error_details}")
+            res = self._post(SabreEndpoints.EXCHANGE_BOOKING, payload, "Exchange pricing",
+                             timeout=120, unknown_outcome_on_timeout=True)
+        finally:
+            # Exchange Booking runs in the token's Sabre session — start the next call clean
+            self._invalidate_token()
+        return res.get("ExchangeBookingRS", res)
+
+    @staticmethod
+    def _parse_exchange_result(rs: dict) -> dict:
+        app = rs.get("ApplicationResults") or {}
+        messages = _sabre_messages(app)
+        confirmation = next(iter(_as_list(rs.get("ExchangeConfirmation"))), {}) or {}
+        pqr = confirmation.get("PQR_Number") or next(
+            (q.get("PQR_Number") for q in _as_list(rs.get("PriceQuoteReissue")) if isinstance(q, dict)), None)
+
+        returned = next((v for v in _find_all(rs, "amountReturned") if v not in (None, "")), None)
+        details = next(iter(_find_all(rs, "ExchangeDetails")), {}) or {}
+        details = details[0] if isinstance(details, list) and details else details
+        change_fee = sum(_to_float(c.get("Amount")) for c in _as_list(details.get("ChangeFeeInformation")) if isinstance(c, dict))
+        fare_diff = sum(_to_float(t.get("Amount")) for t in _as_list(details.get("TransactionInformation")) if isinstance(t, dict))
+        total_node = next(iter(_find_all(rs, "TotalFare")), {}) or {}
+        currency = details.get("CurrencyCode") or (total_node.get("CurrencyCode") if isinstance(total_node, dict) else None)
+        amount = _to_float(returned) if returned is not None else (fare_diff + change_fee if details else None)
+        return {
+            "status": app.get("status"),
+            "messages": messages,
+            "pqr_number": int(_to_float(pqr)) if pqr else None,
+            "amount": round(amount, 2) if amount is not None else None,
+            "currency": currency,
+            "breakdown": {
+                "fare_difference": round(fare_diff, 2),
+                "change_fee": round(change_fee, 2),
+                "ticket_value": _to_float(details.get("TicketValue")) or None,
+                "new_fare_total": _to_float(total_node.get("Amount")) if isinstance(total_node, dict) else None,
+            },
+        }
+
+    @staticmethod
+    def _raise_exchange_blocker(result: dict, action: str) -> None:
+        text = " | ".join(result["messages"]) or "no details returned"
+        upper = text.upper()
+        if "ENTRY NOT AVAILABLE" in upper or "NOT AUTHORIZED" in upper or "NOT ACTIVE" in upper:
+            raise SupplierError(
+                f"{action}: Sabre Automated Exchanges (WFR) is not activated for this PCC — Sabre must enable it "
+                f"before tickets can be reissued through the API. Nothing was changed. | Details: {text}"
+            )
+        if any(code in upper for code in ("HALT ON STATUS", "UNABLE TO SELL", "NO AVAIL", "UC ", "NN ")):
+            raise SupplierError(f"{action}: the new flight could not be confirmed by the airline. Nothing was changed. | Details: {text}")
+        raise SupplierError(f"{action} failed. Nothing was changed. | Details: {text}")
+
+    def quote_exchange(self, params: ExchangeQuoteRequest, passenger_types: Optional[list] = None,
+                       keep_open: bool = False) -> dict:
+        """
+        Prices the exchange without committing anything (price comparison always halts).
+        Returns: amount (to collect), currency, breakdown, context.
+        """
+        ctx = self._exchange_context(params.pnr, params.original_ticket_number)
+        rs = self._exchange_booking(params.pnr, params.original_ticket_number, params.new_flight_segments, ctx,
+                                    amount_specified=-1, increase_tolerance=0, halt_on_decrease=True)
+        result = self._parse_exchange_result(rs)
+
+        if result["pqr_number"] and result["status"] == "Complete":
+            # Price happened to equal the sentinel and Sabre committed: the exchange is already stored
+            ctx["pqr_number"] = result["pqr_number"]
+        elif result["amount"] is None:
+            self._raise_exchange_blocker(result, "Exchange quote")
+
+        return {
+            "amount": result["amount"],
+            "currency": result["currency"],
+            "breakdown": {**result["breakdown"], "warnings": result["messages"]},
+            "context": ctx,
+        }
+
+    def release_quote(self, quote: Optional[dict]) -> None:
+        """Sabre quotes hold no supplier session — nothing to release."""
+
+    def exchange_ticket(self, params: ExchangeTicketRequest, quote: dict) -> dict:
+        """
+        Commits the exchange within the confirmed amount (Sabre-side price guard), then reissues the
+        ticket against the stored PQR. If the reissue fails after the PQR was stored, raises
+        PartialExchangeError so the next confirm retries only the reissue.
+        """
+        ctx = quote.get("context") or {}
+        pqr = ctx.get("pqr_number")
+        if not pqr:
+            rs = self._exchange_booking(
+                params.pnr, params.original_ticket_number, ctx["new_flight_segments"], ctx,
+                amount_specified=float(params.confirmed_amount), increase_tolerance=float(ctx.get("tolerance", 1)),
+                halt_on_decrease=False,
+            )
+            result = self._parse_exchange_result(rs)
+            if not result["pqr_number"] or result["status"] != "Complete":
+                if result["amount"] is not None and result["amount"] > float(params.confirmed_amount) + float(ctx.get("tolerance", 1)):
+                    raise PriceChangedError(
+                        f"Exchange price increased to {result['currency']} {result['amount']}. Nothing was changed.",
+                        {"amount": result["amount"], "currency": result["currency"], "breakdown": result["breakdown"]},
+                    )
+                self._raise_exchange_blocker(result, "Exchange commit")
+            pqr = result["pqr_number"]
+
+        payload = self._air_ticket_payload(params.pnr, [{"Number": int(pqr), "Reissue": True}])
+        try:
+            res = self._post(SabreEndpoints.ISSUE_TICKET, payload, "Reissue",
+                             timeout=120, unknown_outcome_on_timeout=True)
+        except SupplierError as exc:
+            raise PartialExchangeError(
+                f"The itinerary was changed and reissue record PQR {pqr} is stored, but the new ticket was not "
+                f"issued. Retry /ticket/exchange with the same quote_id to reissue only, or reissue PQR {pqr} in "
+                f"Sabre Red. Do NOT request a new quote. | Details: {exc}", pqr_number=pqr) from exc
+
+        rs = res.get("AirTicketRS", {})
+        if (rs.get("ApplicationResults") or {}).get("status") != "Complete":
+            raise PartialExchangeError(
+                f"The itinerary was changed and PQR {pqr} is stored, but Sabre did not reissue the ticket: "
+                f"{' | '.join(_sabre_messages(rs.get('ApplicationResults') or {})) or 'no details'}. "
+                f"Retry /ticket/exchange with the same quote_id, or reissue PQR {pqr} in Sabre Red.", pqr_number=pqr)
+
+        tickets = [
+            {"TicketNumber": str(t.get("DocumentNumber") or t.get("TicketNumber"))}
+            for t in _as_list(rs.get("Summary")) if isinstance(t, dict) and (t.get("DocumentNumber") or t.get("TicketNumber"))
+        ]
+        return {"status": "Success", "pnr": params.pnr, "pqr_number": pqr, "TicketDetails": tickets, "raw_response": res}
+
+    def quote_refund(self, params: RefundQuoteRequest) -> dict:
+        """
+        Prices a refund via Booking Management checkFlightTickets (read-only — nothing is changed).
+        Returns: refundable, amount, currency, penalty, tickets[], raw_response.
+        """
+        payload = {"tickets": [{"number": t} for t in params.ticket_numbers]}
+        res = self._post(SabreEndpoints.CHECK_FLIGHT_TICKETS, payload, "Refund quote")
+
+        tickets, amount, penalty, currency = [], 0.0, 0.0, None
+        refundable = True
+        for node in _find_all(res, "refundTotals"):
+            if not isinstance(node, dict):
+                continue
+            amount += _to_float(node.get("total"))
+            currency = currency or node.get("currencyCode")
+        for pen in _find_all(res, "refundPenalties"):
+            for p in _as_list(pen):
+                if isinstance(p, dict):
+                    # {"applicability": "BEFORE_DEPARTURE", "penalty": {"amount": "18531.0", "currencyCode": "BDT"}}
+                    node = p.get("penalty") if isinstance(p.get("penalty"), dict) else p
+                    penalty += _to_float(node.get("amount") or node.get("total"))
+                    currency = currency or node.get("currencyCode")
+        flags = _find_all(res, "isRefundable")
+        if not flags or not all(bool(f) for f in flags):
+            refundable = False
+        for t in _find_all(res, "number"):
+            if isinstance(t, str) and t.isdigit() and len(t) == 13 and t not in tickets:
+                tickets.append(t)
+
+        # Sabre explains blockers as warnings, e.g. "49005: Automated Refunds not active"
+        warnings = [e.get("description") for e in _as_list(res.get("errors")) if isinstance(e, dict) and e.get("description")]
+        priced = bool(_find_all(res, "refundTotals"))
+        reason = None
+        if not refundable:
+            reason = "Ticket is not refundable per the fare rules"
+        elif not priced:
+            reason = "Sabre did not price the refund" + (f": {'; '.join(warnings)}" if warnings else "")
+
+        return {
+            "refundable": refundable and priced,
+            "amount": round(amount, 2),
+            "penalty": round(penalty, 2),
+            "currency": currency,
+            "tickets": tickets or list(params.ticket_numbers),
+            "reason": reason,
+            "warnings": warnings,
+            "raw_response": res,
+        }
+
+    def refund_ticket(self, params: RefundTicketRequest, quote: dict) -> dict:
+        """
+        Submits the refund via Booking Management refundFlightTickets. Called only after the
+        controller re-quoted with quote_refund() and the price guard accepted the amount.
+        """
+        payload: dict = {"tickets": [{"number": t} for t in params.ticket_numbers]}
+        if params.waiver_code:
+            payload["refundQualifiers"] = {"waiverCode": params.waiver_code}
+        return self._post(SabreEndpoints.REFUND_FLIGHT_TICKETS, payload, "Ticket refund",
+                          timeout=90, unknown_outcome_on_timeout=True)
+
+    # ── Ancillaries ──────────────────────────────────────────────────────────
 
     def get_seat_maps(self, seat_params: SeatMapRequest) -> dict:
-        """
-        Calls Sabre's Seat Map API to retrieve available seats for a flight.
-        """
-        url = f"{self.base_url}{SabreEndpoints.SEAT_MAP}"
-        headers = self.get_headers()
-        
         p = _parse_sabre_segment(seat_params.flight_segment)
         payload = {
             "SeatMapRQ": {
@@ -1227,117 +1284,48 @@ class SabreFlightService(SabreBaseService):
                 }
             }
         }
-
         if seat_params.pnr:
             payload["SeatMapRQ"]["BookingDetails"] = {"PNR": seat_params.pnr}
-        
-        print(f"Sending Seat Map request to Sabre: {url}")
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}")
-            raise Exception(f"Seat map retrieval failed. {str(e)}{error_details}")
+        return self._post(SabreEndpoints.SEAT_MAP, payload, "Seat map retrieval")
 
     def get_baggage_allowance(self, baggage_params: BaggageAllowanceRequest) -> dict:
-        """
-        Calls Sabre's Baggage Allowance API.
-        """
-        url = f"{self.base_url}{SabreEndpoints.BAGGAGE_ALLOWANCE}"
-        headers = self.get_headers()
-        
         payload = {
             "BaggageAllowanceRQ": {
-                 "version": "4.0.0",
-                 "BookingDetails": {
-                     "PNR": baggage_params.pnr
-                 }
+                "version": "4.0.0",
+                "BookingDetails": {"PNR": baggage_params.pnr}
             }
         }
-        
-        print(f"Sending Baggage Allowance request to Sabre: {url} | PNR: {baggage_params.pnr}")
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}")
-            raise Exception(f"Baggage allowance retrieval failed. {str(e)}{error_details}")
+        return self._post(SabreEndpoints.BAGGAGE_ALLOWANCE, payload, "Baggage allowance retrieval")
 
     def place_in_queue(self, queue_params: QueueRequest) -> dict:
-        """
-        Calls Sabre's Queue Place API to manage agent queues.
-        """
-        url = f"{self.base_url}{SabreEndpoints.QUEUE_PLACE}"
-        headers = self.get_headers()
-        
         payload = {
             "QueuePlaceRQ": {
                 "version": "1.0.0",
                 "QueueInfo": {
                     "QueueIdentifier": [
-                        {
-                            "Number": queue_params.queue_number,
-                            "PseudoCityCode": queue_params.pseudo_city_code
-                        }
+                        {"Number": queue_params.queue_number, "PseudoCityCode": queue_params.pseudo_city_code}
                     ],
                     "RecordLocator": queue_params.pnr
                 }
             }
         }
-        
-        print(f"Sending Queue Place request to Sabre: {url} | PNR: {queue_params.pnr} -> Queue: {queue_params.queue_number}")
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}")
-            raise Exception(f"Queue placement failed. {str(e)}{error_details}")
+        return self._post(SabreEndpoints.QUEUE_PLACE, payload, "Queue placement")
 
     def get_fare_rules(self, rules_params: FareRulesRequest) -> dict:
-        """
-        Calls Sabre's Fare Rules API (/v1/offers/farerules).
-        Retrieves structured fare rules for a given flight segment and fare basis.
-        """
-        url = f"{self.base_url}{SabreEndpoints.STRUCTURE_FARE_RULES}"
-        headers = self.get_headers()
-
         p = _parse_sabre_segment(rules_params.flight_segment)
-
-        # Build flight segment for fare rules lookup
+        seg = rules_params.flight_segment
         payload = {
             "originDestination": [
                 {
-                    "departure": {
-                        "airportCode": p["origin"],
-                        "date": p["departure_date"]
-                    },
-                    "arrival": {
-                        "airportCode": p["destination"]
-                    }
+                    "departure": {"airportCode": p["origin"], "date": p["departure_date"]},
+                    "arrival": {"airportCode": p["destination"]}
                 }
             ],
             "travelers": [
-                {
-                    "passengerTypeCode": rules_params.flight_segment.get("passenger_type") or rules_params.flight_segment.get("passengerTypeCode") or "ADT"
-                }
+                {"passengerTypeCode": _sabre_ptc(seg.get("passenger_type") or seg.get("passengerTypeCode"))}
             ],
             "fareRulesRequest": {
-                "fareBasisCode": rules_params.flight_segment.get("fare_basis_code") or rules_params.flight_segment.get("fareBasisCode"),
+                "fareBasisCode": seg.get("fare_basis_code") or seg.get("fareBasisCode"),
                 "marketingAirlineCode": p["marketing_airline"],
                 "flightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
                 "bookingClass": p["booking_class"],
@@ -1346,16 +1334,4 @@ class SabreFlightService(SabreBaseService):
                 "destination": p["destination"]
             }
         }
-
-        print(f"Sending Fare Rules request to Sabre: {url}")
-
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            error_details = ""
-            if 'response' in locals() and hasattr(response, 'text'):
-                error_details = f" | Details: {response.text}"
-                print(f"Sabre Error Response: {response.text}")
-            raise Exception(f"Fare rules retrieval failed. {str(e)}{error_details}")
+        return self._post(SabreEndpoints.STRUCTURE_FARE_RULES, payload, "Fare rules retrieval")

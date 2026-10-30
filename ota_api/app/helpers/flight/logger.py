@@ -20,6 +20,7 @@ from app.models.otadb.AtPricingSnapshot import AtPricingSnapshot
 from app.models.otadb.AtPricingComponent import AtPricingComponent
 from app.models.otadb.Payment import Payment
 from app.models.otadb.AtRefund import AtRefund
+from app.models.otadb.AtRefundItem import AtRefundItem
 from app.models.otadb.AtBookingStatusHistory import AtBookingStatusHistory
 from app.models.otadb.AtAuditEvent import AtAuditEvent
 from app.helpers.common import get_ota_db_session, write_log
@@ -406,9 +407,9 @@ def log_booking(
     response: Dict[str, Any],
     supplier_code: str,
     user_id: Optional[str] = None,
-) -> None:
+) -> bool:
     """
-    Logs a successful booking (PNR creation) to the database.
+    Logs a successful booking (PNR creation) to the database. Returns True when saved.
     Creates: Booking → Journeys → Segments → Passengers → PricingSnapshot → Components → AuditEvent
     """
     db = next(get_ota_db_session())
@@ -432,7 +433,7 @@ def log_booking(
                 f"Booking not logged — GDS returned error(s): {error_msgs}",
                 source="flight.logger.log_booking", type="warning"
             )
-            return
+            return False
 
         pnr, airline_pnr = _extract_pnrs(response)
         if not pnr:
@@ -440,7 +441,7 @@ def log_booking(
         if not pnr:
             write_log(f"Could not find PNR in response: {response}",
                       source="flight.logger.log_booking", type="warning")
-            return
+            return False
 
         # ── 3. Currency & conversion ─────────────────────────────────────
         pi = request.price_info or {}
@@ -822,9 +823,11 @@ def log_booking(
         db.add(history)
 
         db.commit()
+        return True
     except Exception as exc:
         db.rollback()
         write_log(exc, source="flight.logger.log_booking", type="error")
+        return False
     finally:
         db.close()
 
@@ -837,9 +840,9 @@ def log_ticket(
     response: Dict[str, Any],
     supplier_code: str,
     user_id: Optional[int] = None
-) -> None:
+) -> bool:
     """
-    Logs ticket issuance to the database.
+    Logs ticket issuance to the database. Returns True when the issued tickets were saved.
     Creates: Tickets → TicketCoupons → new PricingSnapshot → AuditEvent
     """
     db = next(get_ota_db_session())
@@ -851,7 +854,7 @@ def log_ticket(
         if not booking:
             write_log(f"Booking not found for PNR {request.pnr}",
                       source="flight.logger.log_ticket", type="warning")
-            return
+            return False
 
         # ── 2. Check ticketing success ───────────────────────────────────
         air_ticket_rs = response.get("AirTicketRS", {})
@@ -879,7 +882,7 @@ def log_ticket(
             db.commit()
             write_log(f"Ticketing failed for PNR {request.pnr}: {err_msg}",
                       source="flight.logger.log_ticket", type="warning")
-            return
+            return False
 
         # ── 3. Parse ticket numbers from response ────────────────────────
         parsed_tickets = _parse_ticket_numbers(response)
@@ -1035,9 +1038,11 @@ def log_ticket(
         ))
 
         db.commit()
+        return True
     except Exception as exc:
         db.rollback()
         write_log(exc, source="flight.logger.log_ticket", type="error")
+        return False
     finally:
         db.close()
 
@@ -1384,3 +1389,191 @@ def _match_tickets_to_passengers(
             mapping[t_num] = matched_pax
 
     return mapping
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. POST-BOOKING HELPERS (price reference, ticket status, refunds)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _find_booking(db, pnr: str) -> Optional[AtBooking]:
+    return db.query(AtBooking).filter(
+        (AtBooking.pnr == pnr) | (AtBooking.primary_pnr == pnr)
+    ).order_by(AtBooking.id.desc()).first()
+
+
+def get_booking_snapshot(pnr: str) -> Optional[Dict[str, Any]]:
+    """
+    Returns what post-booking actions need to know about a PNR from our own records:
+    supplier (gds_source), booked supplier fare in BDT, passenger type counts and ticket state.
+    None when the PNR is not in our database.
+    """
+    db = next(get_ota_db_session())
+    try:
+        booking = _find_booking(db, pnr)
+        if not booking:
+            return None
+
+        ptc_counts: Dict[str, int] = {}
+        for pax in db.query(AtBookingPassenger).filter(AtBookingPassenger.booking_id == booking.id).all():
+            code = str(pax.type or pax.passenger_type or "ADT").upper()
+            ptc_counts[code] = ptc_counts.get(code, 0) + 1
+
+        tickets = db.query(AtFlightTicket).filter(AtFlightTicket.booking_id == booking.id).all()
+        return {
+            "booking_id": booking.id,
+            "supplier_code": booking.gds_source,
+            "status": booking.status,
+            # Supplier fare (base + taxes) — our fees/discounts are not part of what the airline charges
+            "booked_fare_bdt": Decimal(str(booking.base_fare or 0)) + Decimal(str(booking.tax_amount or 0)),
+            "passenger_types": [{"Code": c, "Quantity": str(n)} for c, n in ptc_counts.items()],
+            "issued_tickets": [t.ticket_number for t in tickets if t.ticket_number and t.status == "ISSUED"],
+        }
+    except Exception as exc:
+        write_log(exc, source="flight.logger.get_booking_snapshot", type="error")
+        return None
+    finally:
+        db.close()
+
+
+def to_bdt(amount: Any, currency: Optional[str]) -> Decimal:
+    """Converts a supplier amount to BDT using the active rate from the currencies table."""
+    currency = (currency or DEFAULT_CURRENCY).upper()
+    if currency == DEFAULT_CURRENCY:
+        return convert_to_bdt(amount, currency)
+    db = next(get_ota_db_session())
+    try:
+        return convert_to_bdt(amount, currency, _get_conversion_rate(db, currency))
+    finally:
+        db.close()
+
+
+def log_ticket_status_change(
+    pnr: str,
+    ticket_numbers: List[str],
+    new_status: str,
+    action: str,
+    details: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    booking_status: Optional[str] = None,
+) -> bool:
+    """
+    Marks tickets VOIDED / REFUNDED / EXCHANGED (and optionally the booking status) and records
+    an audit event. Returns True when saved.
+    """
+    db = next(get_ota_db_session())
+    try:
+        booking = _find_booking(db, pnr)
+        if not booking:
+            write_log(f"[{action}] Booking not found for PNR {pnr}", source="flight.logger", type="warning")
+            return False
+
+        now = datetime.datetime.utcnow()
+        tickets = db.query(AtFlightTicket).filter(
+            AtFlightTicket.booking_id == booking.id,
+            AtFlightTicket.ticket_number.in_(ticket_numbers),
+        ).all() if ticket_numbers else []
+        for ticket in tickets:
+            ticket.status = new_status
+            ticket.ticket_status = new_status
+            if new_status == "VOIDED":
+                ticket.voided_at = now
+            elif new_status == "EXCHANGED":
+                ticket.exchanged_at = now
+
+        old_status = booking.status
+        if booking_status and booking_status != old_status:
+            booking.status = booking_status
+            booking.booking_status = booking_status
+            db.add(AtBookingStatusHistory(
+                booking_id=booking.id, old_status=old_status, new_status=booking_status,
+                remarks=f"{action} via API",
+            ))
+
+        db.add(AtAuditEvent(
+            booking_id=booking.id,
+            event_type=action,
+            old_value=old_status,
+            new_value=booking_status or old_status,
+            details={"pnr": pnr, "tickets": ticket_numbers, **(details or {})},
+            actor_type="USER" if user_id else "SYSTEM",
+            actor_id=str(user_id) if user_id else None,
+        ))
+        db.commit()
+        return True
+    except Exception as exc:
+        db.rollback()
+        write_log(exc, source=f"flight.logger.{action}", type="error")
+        return False
+    finally:
+        db.close()
+
+
+def log_refund(
+    pnr: str,
+    ticket_numbers: List[str],
+    amount: Any,
+    penalty: Any,
+    currency: Optional[str],
+    supplier_reference: Optional[str] = None,
+    reason: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> bool:
+    """Creates the refund record (amounts stored in BDT) and marks the tickets REFUNDED."""
+    db = next(get_ota_db_session())
+    try:
+        booking = _find_booking(db, pnr)
+        if not booking:
+            write_log(f"[REFUND] Booking not found for PNR {pnr}", source="flight.logger", type="warning")
+            return False
+
+        rate = _get_conversion_rate(db, (currency or DEFAULT_CURRENCY).upper())
+        refund = AtRefund(
+            booking_id=booking.id,
+            type="refund",
+            refund_type="VOLUNTARY",
+            status="COMPLETED",
+            supplier_reference=supplier_reference,
+            reason=reason,
+            remarks=f"Supplier refund {currency} {amount} (penalty {penalty})",
+            actioned_by=int(user_id) if user_id and str(user_id).isdigit() else None,
+            completed_at=datetime.datetime.utcnow(),
+            pcc=booking.pcc,
+        )
+        db.add(refund)
+        db.flush()
+
+        tickets = db.query(AtFlightTicket).filter(
+            AtFlightTicket.booking_id == booking.id,
+            AtFlightTicket.ticket_number.in_(ticket_numbers),
+        ).all()
+        per_ticket = Decimal(len(tickets) or 1)
+        amount_bdt = convert_to_bdt(amount, currency or DEFAULT_CURRENCY, rate)
+        penalty_bdt = convert_to_bdt(penalty, currency or DEFAULT_CURRENCY, rate)
+        for ticket in tickets or [None]:
+            db.add(AtRefundItem(
+                refund_id=refund.id,
+                ticket_id=ticket.id if ticket else None,
+                refund_amount=amount_bdt / per_ticket,
+                penalty_amount=penalty_bdt / per_ticket,
+            ))
+            if ticket:
+                ticket.status = "REFUNDED"
+                ticket.ticket_status = "REFUNDED"
+
+        db.add(AtAuditEvent(
+            booking_id=booking.id,
+            event_type="REFUND",
+            new_value="REFUNDED",
+            details={"pnr": pnr, "tickets": ticket_numbers, "amount": str(amount),
+                     "penalty": str(penalty), "currency": currency},
+            actor_type="USER" if user_id else "SYSTEM",
+            actor_id=str(user_id) if user_id else None,
+        ))
+        db.commit()
+        return True
+    except Exception as exc:
+        db.rollback()
+        write_log(exc, source="flight.logger.log_refund", type="error")
+        return False
+    finally:
+        db.close()

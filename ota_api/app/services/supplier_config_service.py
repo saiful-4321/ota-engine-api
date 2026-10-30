@@ -252,7 +252,8 @@ class SupplierConfigService:
                 db.query(Supplier)
                 .filter(
                     Supplier.code.ilike(ident),
-                    Supplier.is_active == 1
+                    Supplier.is_active == 1,
+                    Supplier.status == "Active"
                 )
                 .first()
             )

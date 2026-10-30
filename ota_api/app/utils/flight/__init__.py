@@ -3,6 +3,13 @@ from typing import Any, Dict, List
 from app.utils.flight import sabre, travelport
 # from app.utils.flight import amadeus   # ← future
 
+# Every formatter is dispatched on the supplier's `integration_provider` ('sabre', 'travelport'),
+# never on the supplier code — codes are free text set by admins (e.g. 'SKY-DAC-01').
+
+
+def _provider(supplier: str) -> str:
+    return str(supplier or "").strip().lower()
+
 
 # ---------------------------------------------------------------------------
 # Shared: error envelope (supplier-independent)
@@ -15,13 +22,11 @@ def format_error_response(error: Exception) -> Dict[str, Any]:
 # Search
 # ---------------------------------------------------------------------------
 def format_search_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    key = str(supplier or "").lower()
-    if "sabre" in key:
+    key = _provider(supplier)
+    if key == "sabre":
         return sabre.format_bfm_response(response)
-    elif "travelport" in key or "gal" in key or (isinstance(response, dict) and "CatalogProductOfferingsResponse" in response):
+    if key == "travelport":
         return travelport.format_catalog_search_response(response)
-    # elif "amadeus" in key:
-    #     return amadeus.format_search_response(response)
     return response
 
 
@@ -33,10 +38,10 @@ def build_search_filters(flights: List[Dict[str, Any]]) -> Dict[str, Any]:
 # Pricing
 # ---------------------------------------------------------------------------
 def format_pricing_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    key = str(supplier or "").lower()
-    if "sabre" in key:
+    key = _provider(supplier)
+    if key == "sabre":
         return sabre.format_pricing_response(response)
-    elif "travelport" in key or "gal" in key or "1g" in key or (isinstance(response, dict) and "OfferListResponse" in response):
+    if key == "travelport":
         return travelport.format_pricing_response(response)
     return response
 
@@ -45,27 +50,29 @@ def format_pricing_response(supplier: str, response: Dict[str, Any]) -> Dict[str
 # PNR / AtBooking
 # ---------------------------------------------------------------------------
 def format_pnr_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    key = str(supplier or "").lower()
-    if "sabre" in key:
+    key = _provider(supplier)
+    if key == "sabre":
         return sabre.format_pnr_response(response)
-    elif "travelport" in key or "gal" in key or "1g" in key or (isinstance(response, dict) and "ReservationResponse" in response):
+    if key == "travelport":
         return travelport.format_pnr_response(response)
     return response
 
 
 def format_pnr_details_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    key = str(supplier or "").lower()
-    if "sabre" in key:
+    key = _provider(supplier)
+    if key == "sabre":
         return sabre.format_pnr_details_response(response)
-    elif "travelport" in key or "gal" in key or "1g" in key or (isinstance(response, dict) and "ReservationResponse" in response):
+    if key == "travelport":
         return travelport.format_pnr_response(response)
     return response
 
 
 def format_cancel_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    key = str(supplier or "").lower()
-    if "sabre" in key:
+    key = _provider(supplier)
+    if key == "sabre":
         return sabre.format_cancel_response(response)
+    if key == "travelport":
+        return travelport.format_cancel_response(response)
     return response
 
 
@@ -73,18 +80,45 @@ def format_cancel_response(supplier: str, response: Dict[str, Any]) -> Dict[str,
 # Ticketing
 # ---------------------------------------------------------------------------
 def format_ticketing_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    key = str(supplier or "").lower()
-    if "sabre" in key:
+    key = _provider(supplier)
+    if key == "sabre":
         return sabre.format_ticketing_response(response)
+    if key == "travelport":
+        return travelport.format_ticketing_response(response)
     return response
+
+
+def format_refund_response(quote: Dict[str, Any], response: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Provider-independent: services already return normalized refund quotes."""
+    body = {
+        "refundable": quote.get("refundable"),
+        "refund_amount": quote.get("amount"),
+        "penalty": quote.get("penalty"),
+        "currency": quote.get("currency"),
+        "tickets": quote.get("tickets"),
+        "reason": quote.get("reason"),
+    }
+    if response is None:
+        return {"status": "success", "message": "Refund quote", "refund": body}
+    return {"status": "success", "message": "Refund submitted", "refund": {**body, "supplier_status": response.get("refund_status")}}
+
+
+def format_exchange_response(quote: Dict[str, Any], response: Dict[str, Any] = None, quote_id: str = None) -> Dict[str, Any]:
+    body = {
+        "amount_due": quote.get("amount"),
+        "currency": quote.get("currency"),
+        "breakdown": quote.get("breakdown"),
+    }
+    if response is None:
+        return {"status": "success", "message": "Exchange quote", "exchange": {**body, "quote_id": quote_id}}
+    tickets = [t.get("TicketNumber") for t in response.get("TicketDetails", []) if isinstance(t, dict)]
+    return {"status": "success", "message": "Ticket exchanged", "exchange": {**body, "new_ticket_numbers": tickets}}
 
 
 # ---------------------------------------------------------------------------
 # Fare Rules
 # ---------------------------------------------------------------------------
 def format_fare_rules_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    key = str(supplier or "").lower()
-    if "sabre" in key:
+    if _provider(supplier) == "sabre":
         return sabre.format_fare_rules_response(response)
     return response
-

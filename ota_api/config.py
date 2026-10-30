@@ -83,3 +83,8 @@ UPLOAD_DIR = "exports"
 ALLOWED_CORS = os.environ.get("ALLOWED_CORS", "*").split(",")
 SECRET_2FA = os.environ.get("SECRET_2FA", "secretkey")
 IS_SELF_SIGNUP_ENABLED=os.environ.get("IS_SELF_SIGNUP_ENABLED", 0)
+
+# Passport OCR microservice (internal — only reachable from the server)
+PASSPORT_OCR_URL = os.environ.get("PASSPORT_OCR_URL", "http://passport_ocr:7800").rstrip("/")
+PASSPORT_OCR_API_KEY = os.environ.get("PASSPORT_OCR_API_KEY", "")
+PASSPORT_OCR_RATE_LIMIT = int(os.environ.get("PASSPORT_OCR_RATE_LIMIT", 10))  # scans per user per minute

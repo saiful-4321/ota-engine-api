@@ -16,7 +16,7 @@ Resolution flow:
        - Use this to fan-out search to all active suppliers simultaneously.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.services.sabre_service import SabreFlightService
 from app.services.supplier_config_service import SupplierConfigService, SupplierConfig
@@ -33,6 +33,14 @@ INTEGRATION_REGISTRY: Dict[str, Any] = {
 
 # Default supplier key to use when no supplier is specified
 DEFAULT_SUPPLIER = "sabre"
+
+# Search-only alias: fan out to every active supplier of every provider
+ALL_SUPPLIERS = "all"
+
+
+def is_provider_key(ident: str) -> bool:
+    """True for a provider key ('sabre', 'travelport'), False for a specific supplier code."""
+    return str(ident or "").strip().lower() in INTEGRATION_REGISTRY
 
 
 def resolve_supplier(supplier_code: str = DEFAULT_SUPPLIER, service: str = "flight") -> Any:
@@ -74,7 +82,7 @@ def resolve_supplier(supplier_code: str = DEFAULT_SUPPLIER, service: str = "flig
 
 
 
-def get_active_flight_suppliers(service: str = "flight") -> Dict[str, Any]:
+def get_active_flight_suppliers(service: str = "flight", provider: str = None) -> Dict[str, Any]:
     """
     Load ALL active supplier instances for a service and return instantiated service objects.
 
@@ -87,12 +95,15 @@ def get_active_flight_suppliers(service: str = "flight") -> Dict[str, Any]:
         e.g. {'SABRE-BD-DAC': SabreFlightService(...), 'SABRE-SYL-XYZ': SabreFlightService(...)}
 
     Inactive suppliers or those with unregistered integration_providers are silently skipped
-    with a warning log.
+    with a warning log. Pass `provider` (e.g. 'travelport') to keep only that provider's suppliers.
     """
     active_configs: List[SupplierConfig] = SupplierConfigService.get_active_suppliers(service=service)
+    provider = str(provider or "").strip().lower() or None
 
     result: Dict[str, Any] = {}
     for cfg in active_configs:
+        if provider and cfg.integration_provider != provider:
+            continue
         service_cls = INTEGRATION_REGISTRY.get(cfg.integration_provider)
         if not service_cls:
             import logging
@@ -104,3 +115,33 @@ def get_active_flight_suppliers(service: str = "flight") -> Dict[str, Any]:
         result[cfg.supplier_code] = service_cls(config=cfg)
 
     return result
+
+
+def _segment_supplier(request: Any) -> Optional[str]:
+    segments = getattr(request, "flight_segments", None) or []
+    if getattr(request, "flight_segment", None):
+        segments = [request.flight_segment]
+    if segments and isinstance(segments[0], dict):
+        return segments[0].get("supplier_code") or segments[0].get("supplier")
+    return None
+
+
+def resolve_request_service(request: Any, query_supplier: Optional[str] = None,
+                            snapshot: Optional[Dict[str, Any]] = None) -> Any:
+    """
+    Picks the supplier service for an API request, most specific first:
+      1. an explicit supplier code (body `supplier`, then `?supplier=`)
+      2. the supplier that created the booking (`snapshot` from get_booking_snapshot, PNR operations)
+      3. the supplier code tagged on the flight segments by /search
+      4. a provider key from body/query, else the default provider
+    """
+    explicit = [s for s in (getattr(request, "supplier", None), query_supplier) if s]
+    for s in explicit:
+        if not is_provider_key(s):
+            return resolve_supplier(s)
+    if snapshot and snapshot.get("supplier_code"):
+        return resolve_supplier(snapshot["supplier_code"])
+    seg_sup = _segment_supplier(request)
+    if seg_sup:
+        return resolve_supplier(seg_sup)
+    return resolve_supplier(explicit[0] if explicit else DEFAULT_SUPPLIER)

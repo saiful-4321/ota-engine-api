@@ -1,4 +1,4 @@
-# app/helpers/password_utils.py
+# app/utils/password_utils.py
 # Shared bcrypt password hashing utility.
 # Uses passlib's bcrypt (rounds=12) which produces $2b$ hashes.
 # Laravel's bcrypt verifier accepts both $2b$ and $2y$ prefixes,
@@ -49,3 +49,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
             return False
 
     return _pwd_context.verify(_bcrypt_safe(plain_password), hashed_password)
+
+
+def password_strength_check(password: str):
+    return (
+            len(password) >= 8
+            and any(char.isalpha() for char in password)
+            and any(char.isdigit() for char in password)
+        )

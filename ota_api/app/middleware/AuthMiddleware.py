@@ -3,7 +3,8 @@ from fastapi.security import OAuth2PasswordBearer
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from app.helpers.authentication import token_validation, validate_sync_token
-from app.helpers.common import common_response, DictionaryToInstance
+from app.helpers.common import common_response
+from app.utils.data_utils import DictionaryToInstance
 from app.models.otadb.IPWhitelist import IPWhitelist
 from app.helpers.common import get_ota_db_session
 from sqlalchemy.sql import func

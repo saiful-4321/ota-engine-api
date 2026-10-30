@@ -3,7 +3,7 @@ from sqlalchemy.orm import sessionmaker
 import random
 from datetime import datetime
 from faker import Faker
-from app.helpers.password_utils import hash_password
+from app.utils.password_utils import hash_password
 from app.models.otadb.User import User
 from app.models.otadb.ActivityLog import ActivityLog
 from app.models.otadb.LoginActivity import LoginActivity

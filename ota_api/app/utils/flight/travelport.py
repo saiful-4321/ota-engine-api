@@ -659,3 +659,37 @@ def format_pricing_response(travelport_response: Dict[str, Any]) -> Dict[str, An
             }
         }
     }
+
+
+def format_ticketing_response(travelport_response: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalized ticketing result (same shape as the Sabre formatter)."""
+    tickets = [
+        str(t.get("TicketNumber")) for t in travelport_response.get("TicketDetails", [])
+        if isinstance(t, dict) and t.get("TicketNumber")
+    ]
+    ok = str(travelport_response.get("status", "")).lower() == "success" and bool(tickets)
+    return {
+        "status": "success" if ok else "error",
+        "message": "Tickets issued successfully" if ok else "Ticketing failed",
+        "ticketing": {
+            "status": travelport_response.get("status"),
+            "pnr": travelport_response.get("pnr"),
+            "errors": [],
+            "timestamp": None,
+            "ticket_numbers": tickets,
+        },
+    }
+
+
+def format_cancel_response(travelport_response: Dict[str, Any]) -> Dict[str, Any]:
+    pnr = travelport_response.get("pnr")
+    return {
+        "status": "success",
+        "message": f"Itinerary {pnr} has been successfully cancelled.",
+        "cancellation": {
+            "pnr": pnr,
+            "cancelledAt": None,
+            "cancelledAll": True,
+            "cancelledSegments": [],
+        },
+    }
