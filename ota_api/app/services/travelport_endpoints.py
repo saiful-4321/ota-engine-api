@@ -26,6 +26,11 @@ class TravelportEndpoints:
     WORKBENCH_PAYMENT = "/air/paymentoffer/reservationworkbench/{id}/payments"
     RESERVATION_RECEIPTS = "/air/receipt/reservations/{locator}/receipts"   # GET = list tickets, POST = cancel (GDS)
 
+    # Seats and fare rules
+    SEAT_AVAILABILITY = "/air/search/seat/catalogofferingsancillaries/seatavailabilities"
+    FARE_RULES_FROM_SEARCH = "/air/farerule/farerules/fromcatalogproductofferings"   # GET
+    FARE_RULES_FROM_RESERVATION = "/air/farerule/farerules/fromreservation"          # GET
+
     # Retrieval and Management
     RESERVATION_GET = "/air/book/reservation/reservations/{id}"
     QUEUE_PLACE = "/air/queue/queue"

@@ -402,8 +402,12 @@ class RefundTicketRequest(RefundQuoteRequest):
     reason: Optional[str] = Field(None, max_length=255, description="Reason recorded on the refund")
 
 class SeatMapRequest(BaseModel):
-    pnr: Optional[str] = Field(None, description="PNR locator if a booking exists")
-    flight_segment: Dict[str, Any] = Field(..., description="Flight segment to retrieve seats for")
+    pnr: Optional[str] = Field(None, description="Optional. When given, the seat map is fetched from the supplier that made this booking.")
+    flight_segment: Dict[str, Any] = Field(
+        ...,
+        description="One segment exactly as returned by /search (carrier, flight number, origin, destination, "
+                    "departure and arrival date/time, bookingCode)."
+    )
     supplier: Optional[str] = Field(None, description=_SUPPLIER_DESC)
 
 class BaggageAllowanceRequest(BaseModel):
@@ -425,5 +429,29 @@ class QueueRequest(BaseModel):
         return _pnr(v)
 
 class FareRulesRequest(BaseModel):
-    flight_segment: Dict[str, Any] = Field(..., description="Flight segment to check rules for")
+    """
+    Either `pnr` (booked fare, every supplier) or a search result (`offer_id` / `flight_segment`,
+    Travelport only — Sabre exposes fare rules over REST for booked PNRs only).
+    """
+    pnr: Optional[str] = Field(None, description="PNR locator: rules of the booked fare")
+    offer_id: Optional[str] = Field(None, description="Offer `id` from /search (Travelport): rules before booking")
+    flight_segment: Optional[Dict[str, Any]] = Field(
+        None, description="A segment from /search; its `offer_id`/`id` and `supplier_code` are used when the fields above are empty"
+    )
+    include_text: bool = Field(False, description="Also return the airline's rule text per category (Travelport)")
     supplier: Optional[str] = Field(None, description=_SUPPLIER_DESC)
+
+    @validator("pnr")
+    def _check_pnr(cls, v):
+        return _pnr(v) if v else v
+
+    @root_validator(skip_on_failure=True)
+    def _need_booking_or_offer(cls, values):
+        if not (values.get("pnr") or values.get("offer_id") or values.get("flight_segment")):
+            raise ValueError("send 'pnr' for a booked fare, or 'offer_id' / 'flight_segment' from /search")
+        return values
+
+    @property
+    def search_offer_id(self) -> Optional[str]:
+        segment = self.flight_segment or {}
+        return self.offer_id or segment.get("offer_id") or segment.get("offerId") or segment.get("id")

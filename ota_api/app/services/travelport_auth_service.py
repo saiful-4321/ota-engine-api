@@ -8,6 +8,7 @@ from urllib3.util.retry import Retry
 from app.services.supplier_config_service import SupplierConfigService, SupplierConfig
 from app.utils.redis_utils import redis_helper
 from app.helpers.common import write_log
+from app.utils.masking import redact_pii, redact_pii_text
 from app.services.supplier_token_service import SupplierTokenService
 from app.utils.flight.errors import SupplierError
 
@@ -197,7 +198,7 @@ class TravelportBaseService:
         try:
             log_headers = {k: ("Bearer [REDACTED]" if k == "Authorization" else v) for k, v in headers.items()}
             write_log(
-                f"Travelport Request: {method.upper()} {url} | Headers: {log_headers} | Params: {params} | JSON: {json}",
+                f"Travelport Request: {method.upper()} {url} | Headers: {log_headers} | Params: {params} | JSON: {redact_pii(json)}",
                 source="travelport_service", type="info"
             )
             response = self.session.request(
@@ -217,7 +218,7 @@ class TravelportBaseService:
                 headers = self.get_headers(custom_headers)
                 log_retry_headers = {k: ("Bearer [REDACTED]" if k == "Authorization" else v) for k, v in headers.items()}
                 write_log(
-                    f"Travelport Request (Retry): {method.upper()} {url} | Headers: {log_retry_headers} | Params: {params} | JSON: {json}",
+                    f"Travelport Request (Retry): {method.upper()} {url} | Headers: {log_retry_headers} | Params: {params} | JSON: {redact_pii(json)}",
                     source="travelport_service", type="info"
                 )
                 response = self.session.request(
@@ -230,7 +231,7 @@ class TravelportBaseService:
                 )
 
             write_log(
-                f"Travelport Response: {response.status_code} | Body: {response.text}",
+                f"Travelport Response: {response.status_code} | Body: {redact_pii_text(response.text)}",
                 source="travelport_service", type="info"
             )
 

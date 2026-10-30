@@ -1033,46 +1033,6 @@ def format_cancel_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
 
-def format_fare_rules_response(sabre_response: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Formats Sabre's /v1/offers/farerules response into a clean, structured format.
-    """
-    # Handle errors
-    errors = sabre_response.get("errors", [])
-    if errors:
-        first_error = errors[0]
-        return {
-            "status": "error",
-            "message": first_error.get("description") or first_error.get("message", "Fare rules retrieval failed"),
-            "errors": errors
-        }
-
-    # Extract fare rules categories
-    formatted_rules = []
-    for rule in sabre_response.get("fareRules", []):
-        categories = []
-        for cat in rule.get("ruleCategories", []):
-            categories.append({
-                "categoryNumber": cat.get("categoryNumber"),
-                "categoryName": cat.get("categoryName"),
-                "text": cat.get("rules", [{}])[0].get("text") if cat.get("rules") else None
-            })
-
-        formatted_rules.append({
-            "fareBasisCode": rule.get("fareBasisCode"),
-            "airline": rule.get("validatingAirlineCode"),
-            "origin": rule.get("origin"),
-            "destination": rule.get("destination"),
-            "passengerType": rule.get("passengerTypeCode"),
-            "categories": categories
-        })
-
-    return {
-        "status": "success",
-        "message": "Fare rules retrieved successfully",
-        "fareRules": formatted_rules
-    }
-
 def format_error_response(error: Exception) -> Dict[str, Any]:
     """
     Standardizes exception messages into a consistent JSON error structure.
@@ -1090,10 +1050,13 @@ def format_error_response(error: Exception) -> Dict[str, Any]:
             details = json.loads(parts[1])
             # If details has a more specific message, promote it
             if isinstance(details, dict):
+                first_error = (details.get("errors") or [{}])[0] if isinstance(details.get("errors"), list) else {}
                 if "message" in details:
                     message = f"{message}: {details['message']}"
                 elif "description" in details:
                     message = f"{message}: {details['description']}"
+                elif isinstance(first_error, dict) and (first_error.get("descriptionText") or first_error.get("description")):
+                    message = f"{message}: {first_error.get('descriptionText') or first_error.get('description')}"
         except:
             details = parts[1]
 

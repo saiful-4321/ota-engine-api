@@ -9,7 +9,7 @@ from app.models.flight_schemas import (
     SeatMapRequest, BaggageAllowanceRequest, QueueRequest, FareRulesRequest
 )
 from app.utils.flight.errors import (
-    SupplierError, PriceChangedError, PartialExchangeError,
+    SupplierError, PriceChangedError, PartialExchangeError, OperationNotSupportedError,
 )
 from app.helpers.common import write_log
 import datetime
@@ -1270,32 +1270,35 @@ class SabreFlightService(SabreBaseService):
     # ── Ancillaries ──────────────────────────────────────────────────────────
 
     def get_seat_maps(self, seat_params: SeatMapRequest) -> dict:
+        """Get Seats, payload request: seat map and seat prices for one flight segment."""
         p = _parse_sabre_segment(seat_params.flight_segment)
-        payload = {
-            "SeatMapRQ": {
-                "version": "3.0.0",
-                "Flight": {
-                    "Destination": p["destination"],
-                    "Origin": p["origin"],
-                    "DepartureDate": p["departure_date"],
-                    "MarketingAirline": p["marketing_airline"],
-                    "FlightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
-                    "ResBookDesigCode": p["booking_class"]
-                }
-            }
+        segment = {
+            "paxSegmentId": "SEG1",
+            "departure": {"locationCode": p["origin"], "aircraftScheduledDate": {"date": p["departure_date"]}},
+            "arrival": {"locationCode": p["destination"]},
+            "marketingCarrierInfo": {
+                "carrierCode": p["marketing_airline"],
+                "carrierFlightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
+                "bookingCode": p["booking_class"],
+            },
         }
-        if seat_params.pnr:
-            payload["SeatMapRQ"]["BookingDetails"] = {"PNR": seat_params.pnr}
-        return self._post(SabreEndpoints.SEAT_MAP, payload, "Seat map retrieval")
+        payload = {
+            "requestType": "payload",
+            "request": {
+                "paxes": [{"paxID": "PAX1", "ptc": "ADT"}],
+                "originDest": {"paxJourney": {"paxSegments": [segment]}},
+                "paxSegmentRefIds": ["SEG1"],
+            },
+        }
+        res = self._post(SabreEndpoints.GET_SEATS, payload, "Seat map retrieval")
+        if not (res.get("response") or {}).get("seatMaps"):
+            errors = res.get("errors") or [{}]
+            raise SupplierError(f"Seat map retrieval failed: {errors[0].get('descriptionText') or 'no seat map returned'}")
+        return res
 
     def get_baggage_allowance(self, baggage_params: BaggageAllowanceRequest) -> dict:
-        payload = {
-            "BaggageAllowanceRQ": {
-                "version": "4.0.0",
-                "BookingDetails": {"PNR": baggage_params.pnr}
-            }
-        }
-        return self._post(SabreEndpoints.BAGGAGE_ALLOWANCE, payload, "Baggage allowance retrieval")
+        """The booking itself carries the allowance (getBooking → fareOffers)."""
+        return self.get_pnr_details(PNRDetailsRequest(pnr=baggage_params.pnr))
 
     def place_in_queue(self, queue_params: QueueRequest) -> dict:
         payload = {
@@ -1312,26 +1315,10 @@ class SabreFlightService(SabreBaseService):
         return self._post(SabreEndpoints.QUEUE_PLACE, payload, "Queue placement")
 
     def get_fare_rules(self, rules_params: FareRulesRequest) -> dict:
-        p = _parse_sabre_segment(rules_params.flight_segment)
-        seg = rules_params.flight_segment
-        payload = {
-            "originDestination": [
-                {
-                    "departure": {"airportCode": p["origin"], "date": p["departure_date"]},
-                    "arrival": {"airportCode": p["destination"]}
-                }
-            ],
-            "travelers": [
-                {"passengerTypeCode": _sabre_ptc(seg.get("passenger_type") or seg.get("passengerTypeCode"))}
-            ],
-            "fareRulesRequest": {
-                "fareBasisCode": seg.get("fare_basis_code") or seg.get("fareBasisCode"),
-                "marketingAirlineCode": p["marketing_airline"],
-                "flightNumber": str(p["flight_number_int"] or p["flight_number_str"]),
-                "bookingClass": p["booking_class"],
-                "departureDate": p["departure_date"],
-                "origin": p["origin"],
-                "destination": p["destination"]
-            }
-        }
-        return self._post(SabreEndpoints.STRUCTURE_FARE_RULES, payload, "Fare rules retrieval")
+        """Change / refund penalties of a booked fare (getBooking → fareRules)."""
+        if not rules_params.pnr:
+            raise OperationNotSupportedError(
+                "Sabre returns fare rules for booked PNRs only — send 'pnr'. Rules before booking need "
+                "Sabre's SOAP fare-rules service, which this integration does not use."
+            )
+        return self.get_pnr_details(PNRDetailsRequest(pnr=rules_params.pnr))

@@ -12,114 +12,10 @@ from app.models.flight_schemas import (
     RefundQuoteRequest, RefundTicketRequest, SeatMapRequest,
     BaggageAllowanceRequest, QueueRequest, FareRulesRequest
 )
-from app.utils.flight.errors import SupplierError, OperationNotSupportedError
+from app.utils.flight.errors import SupplierError
 # The Sabre segment parser understands every segment shape the frontend sends back
-# (search response, snake_case, PascalCase); reuse it for exchange matching.
+# (search response, snake_case, PascalCase); reuse it for exchange matching and seat maps.
 from app.services.sabre_service import _parse_sabre_segment as _parse_any_segment
-
-
-def _extract_datetime_parts(val: Any) -> tuple:
-    if not val:
-        return ("", "")
-    if isinstance(val, datetime.datetime):
-        return (val.strftime("%Y-%m-%d"), val.strftime("%H:%M"))
-    if isinstance(val, datetime.date):
-        return (val.strftime("%Y-%m-%d"), "")
-    if isinstance(val, dict):
-        d = str(val.get("date") or "").strip()[:10]
-        t = str(val.get("time") or "").strip()
-        if not d and val.get("dateTime"):
-            return _extract_datetime_parts(val["dateTime"])
-        if t and len(t) >= 5 and ":" in t:
-            t = t[:5]
-        return (d, t)
-
-    s = str(val).strip()
-    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        date_part = s[:10]
-        time_part = ""
-        rest = s[10:].strip().lstrip("T").strip()
-        if len(rest) >= 5 and ":" in rest:
-            time_part = rest[:5]
-        return (date_part, time_part)
-
-    if ":" in s:
-        t_clean = s.replace("Z", "").strip()
-        if "+" in t_clean:
-            t_clean = t_clean.split("+")[0].strip()
-        elif "-" in t_clean and len(t_clean.split("-")) > 1 and ":" in t_clean.split("-")[-1]:
-            t_clean = t_clean.rsplit("-", 1)[0].strip()
-        if len(t_clean) >= 5 and ":" in t_clean:
-            t_clean = t_clean[:5]
-        return ("", t_clean)
-    return (s, "")
-
-
-def _parse_travelport_segment(segment: dict) -> dict:
-    flight_number_int = 0
-    flight_number_str = ""
-    num = segment.get("flight_number") or segment.get("flightNumber")
-    if num:
-        s_num = str(num).strip()
-        flight_number_str = s_num
-        if s_num.isdigit():
-            flight_number_int = int(s_num)
-        else:
-            flight_number_int = 0
-
-    operating_code = ""
-    raw_op = segment.get("operating_airline") or segment.get("operatingAirline") or segment.get("OperatingAirline")
-    if isinstance(raw_op, dict):
-        operating_code = raw_op.get("Code") or raw_op.get("code") or ""
-    elif isinstance(raw_op, str):
-        operating_code = raw_op.strip()
-
-    marketing_code = ""
-    raw_mkt = segment.get("marketing_airline") or segment.get("marketingAirline") or segment.get("MarketingAirline")
-    if isinstance(raw_mkt, dict):
-        marketing_code = raw_mkt.get("Code") or raw_mkt.get("code") or ""
-    elif isinstance(raw_mkt, str):
-        marketing_code = raw_mkt.strip()
-
-    origin_code = str(segment.get("origin") or segment.get("origin_code") or segment.get("departureAirportCode") or "").strip().upper()
-    dest_code = str(segment.get("destination") or segment.get("destination_code") or segment.get("arrivalAirportCode") or "").strip().upper()
-
-    dep_date, dep_time = _extract_datetime_parts(segment.get("departure_date") or segment.get("departureDate"))
-    arr_date, arr_time = _extract_datetime_parts(segment.get("arrival_date") or segment.get("arrivalDate"))
-
-    if not dep_date:
-        dep_date = datetime.date.today().isoformat()
-    if not dep_time:
-        dep_time = "00:00"
-
-    dep_time_seconds = f"{dep_time}:00" if len(dep_time) == 5 else dep_time
-    dep_datetime = f"{dep_date}T{dep_time_seconds}"
-
-    if not arr_date:
-        arr_date = dep_date
-    if not arr_time:
-        arr_time = "23:59"
-
-    arr_time_seconds = f"{arr_time}:00" if len(arr_time) == 5 else arr_time
-    arr_datetime = f"{arr_date}T{arr_time_seconds}"
-
-    b_class = segment.get("booking_class") or segment.get("bookingClass") or segment.get("cabinClass") or "Y"
-
-    return {
-        "origin": origin_code,
-        "destination": dest_code,
-        "departure_date": dep_date,
-        "departure_time": dep_time,
-        "departure_datetime": dep_datetime,
-        "arrival_date": arr_date,
-        "arrival_time": arr_time,
-        "arrival_datetime": arr_datetime,
-        "marketing_airline": marketing_code,
-        "operating_airline": operating_code,
-        "flight_number_int": flight_number_int,
-        "flight_number_str": flight_number_str,
-        "booking_class": b_class
-    }
 
 
 def _map_cabin_class(cabin: Optional[str]) -> str:
@@ -263,24 +159,12 @@ class TravelportFlightService(TravelportBaseService):
             seg = pricing_params.flight_segments[0]
             offer_id = seg.get("offer_id") or seg.get("offerId") or seg.get("id")
 
-        custom_headers = {}
-        cpo_id = None
-        prod_ref = "p0"
-        val_carrier = None
-
-        if offer_id and "@@" in offer_id:
-            parts = offer_id.split("@@")
-            raw_offer_id = parts[0]
-            trace_id = parts[1] if len(parts) > 1 else None
-            if trace_id:
-                custom_headers["TraceId"] = trace_id
-            if len(parts) > 2 and parts[2]:
-                cpo_id = parts[2]
-            if len(parts) > 3 and parts[3]:
-                prod_ref = parts[3]
-            if len(parts) > 4 and parts[4]:
-                val_carrier = parts[4]
-            offer_id = raw_offer_id
+        offer = _split_offer_id(offer_id)
+        custom_headers = {"TraceId": offer["trace_id"]} if offer["trace_id"] else {}
+        cpo_id = offer["catalog_id"]
+        prod_ref = offer["product_ids"] or "p0"
+        val_carrier = offer["validating_carrier"]
+        offer_id = offer["offering_ids"]
 
         if not val_carrier and pricing_params.flight_segments:
             for s in pricing_params.flight_segments:
@@ -1025,13 +909,35 @@ class TravelportFlightService(TravelportBaseService):
     # ── Ancillaries ──────────────────────────────────────────────────────────
 
     def get_seat_maps(self, seat_params: SeatMapRequest) -> dict:
-        raise OperationNotSupportedError("Seat maps are not yet integrated for Travelport.")
+        """Standalone seat map (GDS content): built from the flight details alone, no search session needed."""
+        p = _parse_any_segment(seat_params.flight_segment)
+        flight = {
+            "@type": "SpecificFlightCriteria",
+            "carrier": p["marketing_airline"],
+            "flightNumber": p["flight_number_str"],
+            "departureDate": p["departure_date"],
+            "departureTime": _with_seconds(p["departure_time"]),
+            "arrivalDate": p["arrival_date"],
+            "arrivalTime": _with_seconds(p["arrival_time"]),
+            "from": p["origin"],
+            "to": p["destination"],
+            "cabin": _map_cabin_class(seat_params.flight_segment.get("cabin") or seat_params.flight_segment.get("cabinClass")),
+            "classOfService": p["booking_class"],
+            "segmentSequence": 1,
+        }
+        payload = {
+            "CatalogOfferingsQuerySeatAvailability": {
+                "SeatAvailabilityOfferings": {
+                    "@type": "SeatAvailabilityOfferingsBuildFromProducts",
+                    "ProductCriteriaAir": {"@type": "ProductCriteriaAir", "sequence": 1, "SpecificFlightCriteria": [flight]},
+                }
+            }
+        }
+        return self.request("POST", TravelportEndpoints.SEAT_AVAILABILITY, json=payload)
 
     def get_baggage_allowance(self, baggage_params: BaggageAllowanceRequest) -> dict:
-        raise OperationNotSupportedError(
-            "Baggage allowance lookup by PNR is not available for Travelport; use the baggage "
-            "returned in the search / price response."
-        )
+        """The reservation carries the allowance (Offer → TermsAndConditionsFull → BaggageAllowance)."""
+        return self.get_pnr_details(PNRDetailsRequest(pnr=baggage_params.pnr))
 
     def place_in_queue(self, queue_params: QueueRequest) -> dict:
         payload = {
@@ -1046,10 +952,58 @@ class TravelportFlightService(TravelportBaseService):
         return self.request("POST", TravelportEndpoints.QUEUE_PLACE, json=payload)
 
     def get_fare_rules(self, rules_params: FareRulesRequest) -> dict:
-        raise OperationNotSupportedError("Fare rules are not yet integrated for Travelport.")
+        """
+        Structured change / refund rules — of the booked fare when `pnr` is given, otherwise of the
+        search offer. Returns {"structured": ..., "text": ... | None}; `text` (the airline's rule
+        text per category) is fetched only when `include_text` is set.
+        """
+        if rules_params.pnr:
+            endpoint, params, headers = (TravelportEndpoints.FARE_RULES_FROM_RESERVATION,
+                                         {"reservationIdentifier": rules_params.pnr}, None)
+        else:
+            endpoint, params, headers = self._fare_rules_offer_query(rules_params.search_offer_id)
+
+        def fetch(rule_type: str) -> dict:
+            return self.request("GET", endpoint, params={**params, "fareRuleType": rule_type}, custom_headers=headers)
+
+        return {"structured": fetch("Structured"), "text": fetch("ShortText") if rules_params.include_text else None}
+
+    @staticmethod
+    def _fare_rules_offer_query(offer_id: Optional[str]) -> Tuple[str, Dict[str, str], Optional[Dict[str, str]]]:
+        offer = _split_offer_id(offer_id)
+        if not (offer["offering_ids"] and offer["catalog_id"] and offer["product_ids"]):
+            raise ValueError("'offer_id' must be the offer id returned by /search (it carries the catalog and product ids)")
+        params = {
+            "catalogProductOfferingsIdentifier": offer["catalog_id"],
+            # One fare per call: the first offering / product (outbound for round trips).
+            "catalogProductOfferingID": offer["offering_ids"].split(",")[0],
+            "productIDs": offer["product_ids"].split(",")[0],
+        }
+        headers = {"TraceId": offer["trace_id"]} if offer["trace_id"] else None
+        return TravelportEndpoints.FARE_RULES_FROM_SEARCH, params, headers
 
 
 # ── Module helpers ────────────────────────────────────────────────────────────
+
+def _split_offer_id(offer_id: Optional[str]) -> Dict[str, Optional[str]]:
+    """
+    Search packs everything Travelport needs to find an offer again into one `id`:
+        "<offering ids, comma separated>@@<trace id>@@<catalog id>@@<product ids>@@<validating carrier>"
+    A plain id without '@@' is just the offering id.
+    """
+    parts = (offer_id or "").split("@@")
+
+    def part(index: int) -> Optional[str]:
+        return parts[index] if len(parts) > index and parts[index] else None
+
+    return {"offering_ids": part(0), "trace_id": part(1), "catalog_id": part(2),
+            "product_ids": part(3), "validating_carrier": part(4)}
+
+
+def _with_seconds(time_value: Optional[str]) -> Optional[str]:
+    """'17:10' → '17:10:00' (Travelport wants full times)."""
+    return f"{time_value}:00" if time_value and len(time_value) == 5 else time_value
+
 
 def _as_list(val: Any) -> list:
     if val is None:

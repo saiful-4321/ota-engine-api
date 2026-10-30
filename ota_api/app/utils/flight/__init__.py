@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from app.utils.flight import sabre, travelport
+from app.utils.flight import baggage, fare_rules, sabre, seat_maps, travelport
 # from app.utils.flight import amadeus   # ← future
 
 # Every formatter is dispatched on the supplier's `integration_provider` ('sabre', 'travelport'),
@@ -116,9 +116,34 @@ def format_exchange_response(quote: Dict[str, Any], response: Dict[str, Any] = N
 
 
 # ---------------------------------------------------------------------------
-# Fare Rules
+# Ancillaries: seat map, baggage, fare rules (one shape for every supplier)
 # ---------------------------------------------------------------------------
+def format_seat_map_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
+    key = _provider(supplier)
+    if key == "sabre":
+        return {"status": "success", **seat_maps.from_sabre(response)}
+    if key == "travelport":
+        return {"status": "success", **seat_maps.from_travelport(response)}
+    return response
+
+
+def format_baggage_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
+    key = _provider(supplier)
+    if key == "sabre":
+        return {"status": "success", **baggage.from_sabre(response)}
+    if key == "travelport":
+        return {"status": "success", **baggage.from_travelport(response)}
+    return response
+
+
 def format_fare_rules_response(supplier: str, response: Dict[str, Any]) -> Dict[str, Any]:
-    if _provider(supplier) == "sabre":
-        return sabre.format_fare_rules_response(response)
+    """
+    Sabre: `response` is the getBooking body.
+    Travelport: `response` is {"structured": FareRuleListResponse, "text": FareRuleListResponse | None}.
+    """
+    key = _provider(supplier)
+    if key == "sabre":
+        return {"status": "success", **fare_rules.from_sabre_booking(response)}
+    if key == "travelport":
+        return {"status": "success", **fare_rules.from_travelport(response["structured"], response.get("text"))}
     return response

@@ -181,7 +181,11 @@ def ticket_refund(request: RefundTicketRequest, http_request: Request, supplier:
 # ===========================================================================
 
 @router.post("/seats/map", summary="Get Seat Map",
-             description="Retrieves available seats for a specific flight segment.")
+             description=(
+                 "Seat map of one flight segment with each seat's status, price and features "
+                 "(window, exit row, extra legroom, bassinet …). Same response shape for every supplier. "
+                 "Some airlines do not publish seat maps through the GDS; those return 502 with the airline's message."
+             ))
 @handle_errors
 def seat_map(request: SeatMapRequest, supplier: str = _S):
     return operations.seat_map(request, supplier)
@@ -190,7 +194,10 @@ def seat_map(request: SeatMapRequest, supplier: str = _S):
 @router.post(
     "/baggage/allowance",
     summary="Get Baggage Allowance",
-    description="Checks baggage allowance for a given PNR."
+    description=(
+        "Checked and cabin allowance of a booked PNR per passenger type and route, plus the airline's "
+        "excess-baggage charges when the supplier returns them (Sabre)."
+    )
 )
 @handle_errors
 def baggage_allowance(request: BaggageAllowanceRequest, supplier: str = _S):
@@ -200,7 +207,11 @@ def baggage_allowance(request: BaggageAllowanceRequest, supplier: str = _S):
 @router.post(
     "/fare/rules",
     summary="Get Fare Rules",
-    description="Retrieves structured fare rules for a given flight segment."
+    description=(
+        "Change and refund penalties. Send `pnr` for a booked fare (every supplier), or `offer_id` + "
+        "`supplier` from /search for rules before booking (Travelport). `include_text` adds the airline's "
+        "rule text per category."
+    )
 )
 @handle_errors
 def fare_rules(request: FareRulesRequest, supplier: str = _S):

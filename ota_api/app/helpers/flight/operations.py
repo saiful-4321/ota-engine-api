@@ -29,8 +29,9 @@ from app.models.flight_schemas import (
     VoidTicketRequest,
 )
 from app.utils.flight import (
-    format_cancel_response, format_exchange_response, format_fare_rules_response, format_pnr_details_response,
-    format_pnr_response, format_pricing_response, format_refund_response, format_ticketing_response,
+    format_baggage_response, format_cancel_response, format_exchange_response, format_fare_rules_response,
+    format_pnr_details_response, format_pnr_response, format_pricing_response, format_refund_response,
+    format_seat_map_response, format_ticketing_response,
 )
 
 
@@ -335,17 +336,28 @@ def refund_ticket(request: RefundTicketRequest, query_supplier: Optional[str], u
 
 
 # ── Ancillaries ──────────────────────────────────────────────────────────────
+# Seat map, baggage and fare rules come back in one shape for every supplier
+# (see app/utils/flight/seat_maps.py, baggage.py, fare_rules.py).
+
+def _booking_service(request: Any, query_supplier: Optional[str]) -> Any:
+    """The supplier that made the booking when the request names a PNR, else the request / query supplier."""
+    pnr = getattr(request, "pnr", None)
+    return resolve_request_service(request, query_supplier, get_booking_snapshot(pnr) if pnr else None)
+
 
 def seat_map(request: SeatMapRequest, query_supplier: Optional[str]) -> Dict[str, Any]:
-    snapshot = get_booking_snapshot(request.pnr) if request.pnr else None
-    return resolve_request_service(request, query_supplier, snapshot).get_seat_maps(request)
+    svc = _booking_service(request, query_supplier)
+    body = format_seat_map_response(svc.integration_provider, svc.get_seat_maps(request))
+    return {**body, "supplier_code": svc.supplier_code}
 
 
 def baggage_allowance(request: BaggageAllowanceRequest, query_supplier: Optional[str]) -> Dict[str, Any]:
-    svc = resolve_request_service(request, query_supplier, get_booking_snapshot(request.pnr))
-    return svc.get_baggage_allowance(request)
+    svc = _booking_service(request, query_supplier)
+    body = format_baggage_response(svc.integration_provider, svc.get_baggage_allowance(request))
+    return {**body, "pnr": request.pnr, "supplier_code": svc.supplier_code}
 
 
 def fare_rules(request: FareRulesRequest, query_supplier: Optional[str]) -> Dict[str, Any]:
-    svc = resolve_request_service(request, query_supplier)
-    return format_fare_rules_response(svc.integration_provider, svc.get_fare_rules(request))
+    svc = _booking_service(request, query_supplier)
+    body = format_fare_rules_response(svc.integration_provider, svc.get_fare_rules(request))
+    return {**body, "source": "booking" if request.pnr else "offer", "pnr": request.pnr, "supplier_code": svc.supplier_code}
